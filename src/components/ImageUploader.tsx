@@ -1,7 +1,10 @@
 "use client";
 
 import { useRef, useState } from "react";
+import ResultCard from "@/components/ResultCard";
+import { mockAnalyze } from "@/lib/mockAnalyze";
 import { formatFileSize, validateImage } from "@/lib/validateImage";
+import type { AnalysisResult } from "@/types/analysis";
 
 interface SelectedImage {
   file: File;
@@ -12,6 +15,8 @@ export default function ImageUploader() {
   const [selected, setSelected] = useState<SelectedImage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [result, setResult] = useState<AnalysisResult | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   function handleFile(file: File | undefined) {
@@ -22,6 +27,7 @@ export default function ImageUploader() {
       return;
     }
     setError(null);
+    setResult(null);
     if (selected) URL.revokeObjectURL(selected.previewUrl);
     setSelected({ file, previewUrl: URL.createObjectURL(file) });
   }
@@ -29,7 +35,20 @@ export default function ImageUploader() {
   function handleRemove() {
     if (selected) URL.revokeObjectURL(selected.previewUrl);
     setSelected(null);
+    setResult(null);
     setError(null);
+  }
+
+  async function handleAnalyze() {
+    setIsAnalyzing(true);
+    setError(null);
+    try {
+      setResult(await mockAnalyze());
+    } catch {
+      setError("Analiz sırasında bir hata oluştu. Lütfen tekrar dene.");
+    } finally {
+      setIsAnalyzing(false);
+    }
   }
 
   return (
@@ -63,16 +82,19 @@ export default function ImageUploader() {
             <button
               type="button"
               onClick={handleRemove}
-              className="shrink-0 text-sm font-medium text-red-600 hover:underline"
+              disabled={isAnalyzing}
+              className="shrink-0 text-sm font-medium text-red-600 hover:underline disabled:opacity-50"
             >
               Kaldır
             </button>
           </div>
           <button
             type="button"
-            className="mt-6 w-full rounded-xl bg-slate-900 px-4 py-3 font-semibold text-white hover:bg-slate-700"
+            onClick={handleAnalyze}
+            disabled={isAnalyzing}
+            className="mt-6 w-full rounded-xl bg-slate-900 px-4 py-3 font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Analiz Et
+            {isAnalyzing ? "Analiz ediliyor..." : "Analiz Et"}
           </button>
         </div>
       ) : (
@@ -103,6 +125,8 @@ export default function ImageUploader() {
           </span>
         </button>
       )}
+
+      {result && <ResultCard result={result} />}
 
       {error && (
         <p role="alert" className="mt-3 text-sm text-red-600">
