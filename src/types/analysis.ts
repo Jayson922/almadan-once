@@ -15,11 +15,12 @@ export interface AnalysisResult {
   productName: string;
   storage?: string;
   listingPrice: number;
-  marketPrice: PriceRange;
+  /** Fiyat verisi yoksa null. */
+  marketPrice: PriceRange | null;
   verdict: PriceVerdict;
   recommendation: string;
   /** 0 ile 1 arası güven değeri, bilinmiyorsa null. */
   confidence: number | null;
-  /** Fiyatın dayandığı veri kaynakları. Demo'da boş. */
+  /** Fiyatın dayandığı veri kaynakları. */
   sources: string[];
 }

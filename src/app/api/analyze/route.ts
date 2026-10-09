@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { mockAnalyze } from "@/lib/mockAnalyze";
+import { analyzeListing } from "@/lib/analyzeListing";
 import { validateImage } from "@/lib/validateImage";
 
 export async function POST(request: Request) {
@@ -20,6 +20,27 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: validationError }, { status: 400 });
   }
 
-  const result = await mockAnalyze();
+  const modelId = formData.get("modelId");
+  const priceValue = formData.get("price");
+  if (typeof modelId !== "string" || typeof priceValue !== "string") {
+    return NextResponse.json(
+      { error: "Model ve ilan fiyatı gerekli." },
+      { status: 400 },
+    );
+  }
+
+  const price = Number(priceValue);
+  if (!Number.isFinite(price) || price <= 0 || price > 1_000_000) {
+    return NextResponse.json(
+      { error: "Geçerli bir ilan fiyatı gir." },
+      { status: 400 },
+    );
+  }
+
+  const result = analyzeListing(modelId, price);
+  if (!result) {
+    return NextResponse.json({ error: "Bilinmeyen model." }, { status: 400 });
+  }
+
   return NextResponse.json(result);
 }

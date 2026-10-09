@@ -49,8 +49,9 @@ export default function ResultCard({ result }: { result: AnalysisResult }) {
         <div>
           <dt className="text-sm text-slate-500">Tahmini piyasa</dt>
           <dd className="font-medium">
-            {formatPrice(result.marketPrice.min)} -{" "}
-            {formatPrice(result.marketPrice.max)}
+            {result.marketPrice
+              ? `${formatPrice(result.marketPrice.min)} - ${formatPrice(result.marketPrice.max)}`
+              : "Veri yok"}
           </dd>
         </div>
         <div>
@@ -68,6 +69,13 @@ export default function ResultCard({ result }: { result: AnalysisResult }) {
           <dd className="font-medium">{result.recommendation}</dd>
         </div>
       </dl>
+
+      {result.sources.length > 0 && (
+        <p className="mt-5 border-t border-slate-100 pt-4 text-xs text-slate-500">
+          Kaynak: {result.sources.join(", ")}. Bu aralıklar kesin piyasa verisi
+          değil, tahmindir.
+        </p>
+      )}
     </div>
   );
 }

@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import ChecklistCard from "@/components/ChecklistCard";
 import ResultCard from "@/components/ResultCard";
+import { PHONE_PRICE_TABLE } from "@/lib/phonePrices";
 import { formatFileSize, validateImage } from "@/lib/validateImage";
 import type { AnalysisResult } from "@/types/analysis";
 
@@ -17,7 +18,13 @@ export default function ImageUploader() {
   const [isDragging, setIsDragging] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [modelId, setModelId] = useState(PHONE_PRICE_TABLE[0].id);
+  const [priceText, setPriceText] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const price = Number(priceText);
+  const hasValidPrice =
+    priceText.trim() !== "" && Number.isFinite(price) && price > 0;
 
   function handleFile(file: File | undefined) {
     if (!file) return;
@@ -37,15 +44,18 @@ export default function ImageUploader() {
     setSelected(null);
     setResult(null);
     setError(null);
+    setPriceText("");
   }
 
   async function handleAnalyze() {
-    if (!selected) return;
+    if (!selected || !hasValidPrice) return;
     setIsAnalyzing(true);
     setError(null);
     try {
       const formData = new FormData();
       formData.append("image", selected.file);
+      formData.append("modelId", modelId);
+      formData.append("price", String(price));
 
       const response = await fetch("/api/analyze", {
         method: "POST",
@@ -102,10 +112,54 @@ export default function ImageUploader() {
               Kaldır
             </button>
           </div>
+
+          <div className="mt-6 space-y-4 border-t border-slate-100 pt-6">
+            <p className="text-sm text-slate-600">
+              İlandaki bilgileri gir. Görselden otomatik okuma henüz yok.
+            </p>
+            <div>
+              <label className="block text-sm font-medium" htmlFor="model">
+                Model
+              </label>
+              <select
+                id="model"
+                value={modelId}
+                onChange={(e) => {
+                  setModelId(e.target.value);
+                  setResult(null);
+                }}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+              >
+                {PHONE_PRICE_TABLE.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name} {item.storage}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium" htmlFor="price">
+                İlan fiyatı (TL)
+              </label>
+              <input
+                id="price"
+                type="number"
+                inputMode="numeric"
+                min="1"
+                value={priceText}
+                onChange={(e) => {
+                  setPriceText(e.target.value);
+                  setResult(null);
+                }}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+              />
+            </div>
+          </div>
+
           <button
             type="button"
             onClick={handleAnalyze}
-            disabled={isAnalyzing}
+            disabled={isAnalyzing || !hasValidPrice}
             className="mt-6 w-full rounded-xl bg-slate-900 px-4 py-3 font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isAnalyzing ? "Analiz ediliyor..." : "Analiz Et"}
