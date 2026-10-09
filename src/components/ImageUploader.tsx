@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import ChecklistCard from "@/components/ChecklistCard";
 import ResultCard from "@/components/ResultCard";
 import { formatFileSize, validateImage } from "@/lib/validateImage";
 import type { AnalysisResult } from "@/types/analysis";
@@ -139,7 +140,12 @@ export default function ImageUploader() {
         </button>
       )}
 
-      {result && <ResultCard result={result} />}
+      {result && (
+        <>
+          <ResultCard result={result} />
+          <ChecklistCard />
+        </>
+      )}
 
       {error && (
         <p role="alert" className="mt-3 text-sm text-red-600">
