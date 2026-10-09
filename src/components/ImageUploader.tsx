@@ -2,7 +2,6 @@
 
 import { useRef, useState } from "react";
 import ResultCard from "@/components/ResultCard";
-import { mockAnalyze } from "@/lib/mockAnalyze";
 import { formatFileSize, validateImage } from "@/lib/validateImage";
 import type { AnalysisResult } from "@/types/analysis";
 
@@ -40,12 +39,26 @@ export default function ImageUploader() {
   }
 
   async function handleAnalyze() {
+    if (!selected) return;
     setIsAnalyzing(true);
     setError(null);
     try {
-      setResult(await mockAnalyze());
+      const formData = new FormData();
+      formData.append("image", selected.file);
+
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Analiz sırasında bir hata oluştu.");
+        return;
+      }
+      setResult(data as AnalysisResult);
     } catch {
-      setError("Analiz sırasında bir hata oluştu. Lütfen tekrar dene.");
+      setError("Sunucuya ulaşılamadı. Lütfen tekrar dene.");
     } finally {
       setIsAnalyzing(false);
     }
