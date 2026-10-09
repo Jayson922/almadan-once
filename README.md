@@ -1,36 +1,49 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ALMADAN ÖNCE
 
-## Getting Started
+İkinci el ürünü satın almadan önce fiyatını ve ilanını kontrol etmeye yardımcı olan web uygulaması.
 
-First, run the development server:
+> **Durum: MVP (demo).** Şu anda gerçek bir analiz yapılmıyor. Sonuç ekranındaki bilgiler sabit bir demo verisidir ve arayüzde de DEMO olarak işaretlenir.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## Şu an çalışanlar
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- İlan ekran görüntüsü yükleme (tıkla veya sürükle-bırak; JPG, JPEG, PNG, WEBP; en fazla 5 MB)
+- Önizleme, dosya adı, boyut, kaldırma
+- "Analiz Et" ile sunucu rotasına (`/api/analyze`) istek ve demo sonuç kartı
+- Dosya tipi ve boyutu hem tarayıcıda hem sunucuda kontrol edilir
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Çalıştırma
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Gereksinimler: Node.js 20.19 veya üstü (22.13+ önerilir), npm, Git.
 
-## Learn More
+    npm install
+    npm run dev
 
-To learn more about Next.js, take a look at the following resources:
+Tarayıcıda http://localhost:3000 adresini aç.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Windows PowerShell'de `npm` komutu bazen çalışmaz. Bu durumda `npm.cmd` kullan.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Diğer komutlar:
 
-## Deploy on Vercel
+    npm run lint
+    npm run build
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Klasör yapısı
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `src/app`: sayfalar ve API rotası (`api/analyze/route.ts`)
+- `src/components`: arayüz bileşenleri (`ImageUploader`, `ResultCard`)
+- `src/lib`: yardımcı fonksiyonlar (`validateImage`, `mockAnalyze`)
+- `src/types`: ortak tip tanımları (`AnalysisResult`)
+
+## Gizli bilgiler
+
+API anahtarları koda yazılmaz. `.env.example` dosyasını `.env.local` olarak kopyalayıp orada doldur. `.env.local` Git'e girmez.
+
+## TODO
+
+- [ ] Gerçek görsel analizi (ilandan marka, model, depolama, fiyat çıkarma)
+- [ ] Telefon için piyasa fiyat verisi ve fiyat değerlendirmesi
+- [ ] Risk kontrol listesi ve satıcıya sorulacak sorular
+- [ ] Görsellerin gizliliği: kişisel bilgi içerebilir, saklama ve loglama politikası
+- [ ] Kategori yapısı (otomobil, bilgisayar, tablet vb. için)
+- [ ] Veritabanı (PostgreSQL), kullanıcı hesabı
+- [ ] Testler
