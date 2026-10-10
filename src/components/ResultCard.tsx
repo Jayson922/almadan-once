@@ -1,31 +1,45 @@
 import type { AnalysisResult } from "@/types/analysis";
 
-function formatPrice(value: number | undefined | null): string {
-  if (typeof value !== "number" || isNaN(value)) {
-    return "0 TL";
+function formatPrice(value: any): string {
+  if (typeof value === "number" && !isNaN(value)) {
+    return `${value.toLocaleString("tr-TR")} TL`;
   }
-  return `${value.toLocaleString("tr-TR")} TL`;
+  if (value && typeof value === "object") {
+    if (typeof value.min === "number" && typeof value.max === "number") {
+      return `${value.min.toLocaleString("tr-TR")} TL - ${value.max.toLocaleString("tr-TR")} TL`;
+    }
+  }
+  return "0 TL";
+}
+
+function renderVerdict(verdict: any): string {
+  if (!verdict) return "BELİRSİZ";
+  if (typeof verdict === "string") {
+    const labels: Record<string, string> = {
+      ÇOK_PAHALI: "ÇOK PAHALI",
+      PAHALI: "PAHALI",
+      UYGUN: "UYGUN",
+      ÇOK_UYGUN: "ÇOK UYGUN",
+      expensive: "PAHALI",
+      reasonable: "UYGUN",
+      cheap: "ÇOK UYGUN",
+    };
+    return labels[verdict] ?? verdict;
+  }
+  if (typeof verdict === "object" && verdict.label) {
+    return String(verdict.label);
+  }
+  return String(verdict);
 }
 
 export default function ResultCard({ result }: { result: AnalysisResult }) {
+  const verdictText = renderVerdict(result.verdict);
+
   const verdictColors: Record<string, string> = {
-    ÇOK_PAHALI: "bg-red-100 text-red-800 border-red-200",
+    "ÇOK PAHALI": "bg-red-100 text-red-800 border-red-200",
     PAHALI: "bg-orange-100 text-orange-800 border-orange-200",
     UYGUN: "bg-emerald-100 text-emerald-800 border-emerald-200",
-    ÇOK_UYGUN: "bg-blue-100 text-blue-800 border-blue-200",
-    expensive: "bg-orange-100 text-orange-800 border-orange-200",
-    reasonable: "bg-emerald-100 text-emerald-800 border-emerald-200",
-    cheap: "bg-blue-100 text-blue-800 border-blue-200",
-  };
-
-  const verdictLabels: Record<string, string> = {
-    ÇOK_PAHALI: "ÇOK PAHALI",
-    PAHALI: "PAHALI",
-    UYGUN: "UYGUN",
-    ÇOK_UYGUN: "ÇOK UYGUN",
-    expensive: "PAHALI",
-    reasonable: "UYGUN",
-    cheap: "ÇOK UYGUN",
+    "ÇOK UYGUN": "bg-blue-100 text-blue-800 border-blue-200",
   };
 
   return (
@@ -62,17 +76,21 @@ export default function ResultCard({ result }: { result: AnalysisResult }) {
         <div className="mt-1">
           <span
             className={`inline-block rounded-full border px-3 py-1 text-xs font-bold ${
-              verdictColors[result.verdict] ?? "bg-slate-100 text-slate-800"
+              verdictColors[verdictText] ?? "bg-slate-100 text-slate-800 border-slate-200"
             }`}
           >
-            {verdictLabels[result.verdict] ?? result.verdict}
+            {verdictText}
           </span>
         </div>
       </div>
 
       <div className="border-t border-slate-100 pt-4">
         <span className="text-xs text-slate-500">Karar</span>
-        <p className="mt-1 text-sm font-medium text-slate-700">{result.recommendation}</p>
+        <p className="mt-1 text-sm font-medium text-slate-700">
+          {typeof result.recommendation === "string"
+            ? result.recommendation
+            : "Fiyat değerlendirmesi yapıldı."}
+        </p>
       </div>
 
       {result.updatedAt && (
