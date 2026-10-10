@@ -16,7 +16,9 @@ export default function ImageUploader() {
   const [selected, setSelected] = useState<SelectedImage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isExtracting, setIsExtracting] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [extractNotice, setExtractNotice] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [modelId, setModelId] = useState(PHONE_PRICE_TABLE[0].id);
   const [priceText, setPriceText] = useState("");
@@ -25,6 +27,54 @@ export default function ImageUploader() {
   const price = Number(priceText);
   const hasValidPrice =
     priceText.trim() !== "" && Number.isFinite(price) && price > 0;
+
+  async function extractListingData(file: File) {
+    setIsExtracting(true);
+    setExtractNotice(null);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+    try {
+      const formData = new FormData();
+      formData.append("image", file);
+
+      const response = await fetch("/api/extract", {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data = await response.json();
+        let autoFilled = false;
+
+        if (data.modelId && PHONE_PRICE_TABLE.some((p) => p.id === data.modelId)) {
+          setModelId(data.modelId);
+          autoFilled = true;
+        }
+
+        if (typeof data.price === "number" && data.price > 0) {
+          setPriceText(String(data.price));
+          autoFilled = true;
+        }
+
+        if (autoFilled) {
+          setExtractNotice("Görseldeki bilgiler otomatik olarak dolduruldu. Lütfen kontrol edin.");
+        } else {
+          setExtractNotice("Görselden model veya fiyat okunamadı. Lütfen bilgileri elle girin.");
+        }
+      } else {
+        setExtractNotice("Görsel analizi yapılamadı. Lütfen bilgileri elle girin.");
+      }
+    } catch {
+      setExtractNotice("Görsel okuma zaman aşımına uğradı veya hata oluştu. Bilgileri elle girebilirsiniz.");
+    } finally {
+      setIsExtracting(false);
+    }
+  }
 
   function handleFile(file: File | undefined) {
     if (!file) return;
@@ -35,8 +85,11 @@ export default function ImageUploader() {
     }
     setError(null);
     setResult(null);
+    setExtractNotice(null);
     if (selected) URL.revokeObjectURL(selected.previewUrl);
     setSelected({ file, previewUrl: URL.createObjectURL(file) });
+
+    extractListingData(file);
   }
 
   function handleRemove() {
@@ -44,6 +97,7 @@ export default function ImageUploader() {
     setSelected(null);
     setResult(null);
     setError(null);
+    setExtractNotice(null);
     setPriceText("");
   }
 
@@ -98,25 +152,33 @@ export default function ImageUploader() {
           />
           <div className="mt-4 flex items-center justify-between gap-4">
             <div className="min-w-0">
-              <p className="truncate font-medium">{selected.file.name}</p>
-              <p className="text-sm text-slate-500">
+              <p className="truncate text-sm font-medium">{selected.file.name}</p>
+              <p className="text-xs text-slate-500">
                 {formatFileSize(selected.file.size)}
               </p>
             </div>
             <button
               type="button"
               onClick={handleRemove}
-              disabled={isAnalyzing}
-              className="shrink-0 text-sm font-medium text-red-600 hover:underline disabled:opacity-50"
+              className="text-sm font-medium text-red-600 hover:underline"
             >
               Kaldır
             </button>
           </div>
 
-          <div className="mt-6 space-y-4 border-t border-slate-100 pt-6">
-            <p className="text-sm text-slate-600">
-              İlandaki bilgileri gir. Görselden otomatik okuma henüz yok.
-            </p>
+          {isExtracting && (
+            <div className="mt-4 rounded-lg bg-blue-50 p-3 text-sm text-blue-700">
+              Görseldeki ilan bilgileri Yapay Zeka ile okunuyor...
+            </div>
+          )}
+
+          {extractNotice && !isExtracting && (
+            <div className="mt-4 rounded-lg bg-slate-100 p-3 text-sm text-slate-700">
+              {extractNotice}
+            </div>
+          )}
+
+          <div className="mt-6 grid gap-4 sm:grid-cols-2">
             <div>
               <label className="block text-sm font-medium" htmlFor="model">
                 Model
@@ -159,7 +221,7 @@ export default function ImageUploader() {
           <button
             type="button"
             onClick={handleAnalyze}
-            disabled={isAnalyzing || !hasValidPrice}
+            disabled={isAnalyzing || isExtracting || !hasValidPrice}
             className="mt-6 w-full rounded-xl bg-slate-900 px-4 py-3 font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isAnalyzing ? "Analiz ediliyor..." : "Analiz Et"}
