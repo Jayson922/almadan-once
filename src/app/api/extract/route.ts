@@ -1,35 +1,76 @@
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextResponse } from "next/server";
-import { extractListing } from "@/lib/extractListing";
-import { validateImage } from "@/lib/validateImage";
+import { PHONE_PRICE_TABLE } from "@/lib/phonePrices";
 
-export async function POST(request: Request) {
-  let formData: FormData;
+const apiKey = process.env.GEMINI_API_KEY;
+
+export async function POST(req: Request) {
   try {
-    formData = await request.formData();
-  } catch {
-    return NextResponse.json({ error: "Geçersiz istek." }, { status: 400 });
-  }
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: "API anahtarı yapılandırılmamış." },
+        { status: 500 }
+      );
+    }
 
-  const image = formData.get("image");
-  if (!image || typeof image === "string") {
-    return NextResponse.json({ error: "Görsel bulunamadı." }, { status: 400 });
-  }
+    const formData = await req.formData();
+    const image = formData.get("image") as File | null;
 
-  const validationError = validateImage(image);
-  if (validationError) {
-    return NextResponse.json({ error: validationError }, { status: 400 });
-  }
+    if (!image) {
+      return NextResponse.json(
+        { error: "Görsel yüklenmedi." },
+        { status: 400 }
+      );
+    }
 
-  try {
-    const result = await extractListing(image);
-    return NextResponse.json(result);
-  } catch {
-    return NextResponse.json(
+    const buffer = Buffer.from(await image.arrayBuffer());
+    const mimeType = image.type || "image/jpeg";
+
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+    const modelListPrompt = PHONE_PRICE_TABLE.map(
+      (p) => `- "${p.id}": ${p.name} ${p.storage}`
+    ).join("\n");
+
+    const prompt = `
+Sen bir ikinci el telefon ilan analiz asistanısın. Sana verilen ekran görüntüsünden telefon modelini ve fiyatını çıkar.
+
+Aşağıdaki model listesinden görseldeki telefona en uygun olan modelId değerini seç:
+${modelListPrompt}
+
+Sadece ve sadece aşağıdaki JSON formatında yanıt ver:
+{
+  "modelId": "seçtiğin_model_id_veya_null",
+  "price": number_veya_null
+}
+
+Fiyatı sadece sayı olarak yaz (örn: 25000). Eğer model veya fiyat okunamıyorsa null ver. Başka hiçbir açıklama yazma.
+    `;
+
+    const result = await model.generateContent([
+      prompt,
       {
-        error:
-          "Görselden okuma başarısız oldu. Model ve fiyatı elle girebilirsin.",
+        inlineData: {
+          data: buffer.toString("base64"),
+          mimeType,
+        },
       },
-      { status: 502 },
-    );
+    ]);
+
+    const responseText = result.response.text().trim();
+    
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return NextResponse.json({ modelId: null, price: null });
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    return NextResponse.json({
+      modelId: parsed.modelId ?? null,
+      price: typeof parsed.price === "number" ? parsed.price : null,
+    });
+  } catch {
+    return NextResponse.json({ modelId: null, price: null });
   }
 }
