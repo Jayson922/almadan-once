@@ -1,18 +1,19 @@
 import type { AnalysisResult } from "@/types/analysis";
 
-function formatPrice(value: any): string {
+function formatPrice(value: unknown): string {
   if (typeof value === "number" && !isNaN(value)) {
     return `${value.toLocaleString("tr-TR")} TL`;
   }
   if (value && typeof value === "object") {
-    if (typeof value.min === "number" && typeof value.max === "number") {
-      return `${value.min.toLocaleString("tr-TR")} TL - ${value.max.toLocaleString("tr-TR")} TL`;
+    const obj = value as Record<string, unknown>;
+    if (typeof obj.min === "number" && typeof obj.max === "number") {
+      return `${obj.min.toLocaleString("tr-TR")} TL - ${obj.max.toLocaleString("tr-TR")} TL`;
     }
   }
   return "0 TL";
 }
 
-function renderVerdict(verdict: any): string {
+function renderVerdict(verdict: unknown): string {
   if (!verdict) return "BELİRSİZ";
   if (typeof verdict === "string") {
     const labels: Record<string, string> = {
@@ -26,8 +27,11 @@ function renderVerdict(verdict: any): string {
     };
     return labels[verdict] ?? verdict;
   }
-  if (typeof verdict === "object" && verdict.label) {
-    return String(verdict.label);
+  if (typeof verdict === "object" && verdict !== null) {
+    const obj = verdict as Record<string, unknown>;
+    if (typeof obj.label === "string") {
+      return obj.label;
+    }
   }
   return String(verdict);
 }
