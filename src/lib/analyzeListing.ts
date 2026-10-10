@@ -1,44 +1,41 @@
 import { evaluatePhonePrice } from "@/lib/evaluatePrice";
-import {
-  PHONE_PRICE_TABLE,
-  PRICE_TABLE_UPDATED_AT,
-} from "@/lib/phonePrices";
+import { PHONE_PRICE_TABLE, PRICE_TABLE_UPDATED_AT } from "@/lib/phonePrices";
 import type { AnalysisResult, PriceVerdict } from "@/types/analysis";
 
 const RECOMMENDATIONS: Record<PriceVerdict, string> = {
-  great_deal:
-    "Fiyat piyasa aralığının altında. Çok ucuz fiyat sahtekârlık ya da gizli sorun işareti olabilir, kontrol listesini mutlaka uygula.",
-  fair: "Fiyat piyasa aralığında. Kontrol listesini uygula ve pazarlık payı olup olmadığını sor.",
-  expensive:
-    "Fiyat piyasa aralığının üstünde. Pazarlık yap ya da başka ilanlara bak.",
-  unknown:
-    "Bu model için fiyat verisi yok, fiyat değerlendirmesi yapılamadı. Kontrol listesini uygula.",
+  ÇOK_PAHALI: "Piyasanın çok üzerinde. Farklı ilanlara yönelmeniz tavsiye edilir.",
+  PAHALI: "Piyasa ortalamasının üzerinde. Pazarlık yapmayı deneyebilirsiniz.",
+  UYGUN: "Fiyat piyasa aralığında. Kontrol listesini uygula ve pazarlık payı olup olmadığını sor.",
+  ÇOK_UYGUN: "Piyasa ortalamasının altında. Cihazın durumunu ve faturasını dikkatlice inceleyin.",
 };
 
-export function analyzeListing(
-  modelId: string,
-  listingPrice: number,
-): AnalysisResult | null {
-  const entry = PHONE_PRICE_TABLE.find((item) => item.id === modelId);
-  if (!entry) return null;
+export function analyzeListing(modelId: string, price: number): AnalysisResult {
+  const item = PHONE_PRICE_TABLE.find((p) => p.id === modelId);
 
-  const evaluation = evaluatePhonePrice(modelId, listingPrice);
-  const updated = PRICE_TABLE_UPDATED_AT
-    ? ` (güncelleme: ${PRICE_TABLE_UPDATED_AT})`
-    : "";
+  if (!item) {
+    return {
+      phoneName: "Bilinmeyen Model",
+      storage: "-",
+      price: price || 0,
+      minPrice: 0,
+      maxPrice: 0,
+      verdict: "PAHALI",
+      recommendation: "Model veritabanında bulunamadı.",
+      updatedAt: PRICE_TABLE_UPDATED_AT,
+    };
+  }
+
+  const numericPrice = Number(price) || 0;
+  const verdict = evaluatePhonePrice(numericPrice, item.minPrice, item.maxPrice);
 
   return {
-    isDemo: false,
-    category: "phone",
-    productName: entry.name,
-    storage: entry.storage,
-    listingPrice,
-    marketPrice: evaluation.marketPrice,
-    verdict: evaluation.verdict,
-    recommendation: RECOMMENDATIONS[evaluation.verdict],
-    confidence: null,
-    sources: evaluation.marketPrice
-      ? [`Başlangıç tahmini fiyat tablosu${updated}`]
-      : [],
+    phoneName: item.name,
+    storage: item.storage,
+    price: numericPrice,
+    minPrice: item.minPrice,
+    maxPrice: item.maxPrice,
+    verdict,
+    recommendation: RECOMMENDATIONS[verdict] ?? "Fiyat değerlendirmesi yapıldı.",
+    updatedAt: item.updatedAt ?? PRICE_TABLE_UPDATED_AT,
   };
 }

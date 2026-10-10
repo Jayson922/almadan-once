@@ -8,18 +8,24 @@ function formatPrice(value: number | undefined | null): string {
 }
 
 export default function ResultCard({ result }: { result: AnalysisResult }) {
-  const verdictColors = {
+  const verdictColors: Record<string, string> = {
     ÇOK_PAHALI: "bg-red-100 text-red-800 border-red-200",
     PAHALI: "bg-orange-100 text-orange-800 border-orange-200",
     UYGUN: "bg-emerald-100 text-emerald-800 border-emerald-200",
     ÇOK_UYGUN: "bg-blue-100 text-blue-800 border-blue-200",
+    expensive: "bg-orange-100 text-orange-800 border-orange-200",
+    reasonable: "bg-emerald-100 text-emerald-800 border-emerald-200",
+    cheap: "bg-blue-100 text-blue-800 border-blue-200",
   };
 
-  const verdictLabels = {
+  const verdictLabels: Record<string, string> = {
     ÇOK_PAHALI: "ÇOK PAHALI",
     PAHALI: "PAHALI",
     UYGUN: "UYGUN",
     ÇOK_UYGUN: "ÇOK UYGUN",
+    expensive: "PAHALI",
+    reasonable: "UYGUN",
+    cheap: "ÇOK UYGUN",
   };
 
   return (
