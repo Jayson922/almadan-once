@@ -7,6 +7,8 @@ export interface PhonePrice {
   updatedAt: string;
 }
 
+export const PRICE_TABLE_UPDATED_AT = "2026-10-09";
+
 export const PHONE_PRICE_TABLE: PhonePrice[] = [
   // --- APPLE iPHONE ---
   { id: "iphone-11-64", name: "Apple iPhone 11", storage: "64 GB", minPrice: 10000, maxPrice: 14500, updatedAt: "2026-10-01" },

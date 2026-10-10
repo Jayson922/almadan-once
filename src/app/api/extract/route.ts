@@ -1,4 +1,3 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextResponse } from "next/server";
 import { PHONE_PRICE_TABLE } from "@/lib/phonePrices";
 
@@ -25,15 +24,13 @@ export async function POST(req: Request) {
 
     const buffer = Buffer.from(await image.arrayBuffer());
     const mimeType = image.type || "image/jpeg";
-
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const base64Data = buffer.toString("base64");
 
     const modelListPrompt = PHONE_PRICE_TABLE.map(
       (p) => `- "${p.id}": ${p.name} ${p.storage}`
     ).join("\n");
 
-    const prompt = `
+    const promptText = `
 Sen bir ikinci el telefon ilan analiz asistanısın. Sana verilen ekran görüntüsünden telefon modelini ve fiyatını çıkar.
 
 Aşağıdaki model listesinden görseldeki telefona en uygun olan modelId değerini seç:
@@ -48,18 +45,39 @@ Sadece ve sadece aşağıdaki JSON formatında yanıt ver:
 Fiyatı sadece sayı olarak yaz (örn: 25000). Eğer model veya fiyat okunamıyorsa null ver. Başka hiçbir açıklama yazma.
     `;
 
-    const result = await model.generateContent([
-      prompt,
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
       {
-        inlineData: {
-          data: buffer.toString("base64"),
-          mimeType,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-      },
-    ]);
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                { text: promptText },
+                {
+                  inline_data: {
+                    mime_type: mimeType,
+                    data: base64Data,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      }
+    );
 
-    const responseText = result.response.text().trim();
-    
+    if (!response.ok) {
+      return NextResponse.json({ modelId: null, price: null });
+    }
+
+    const result = await response.json();
+    const responseText =
+      result?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       return NextResponse.json({ modelId: null, price: null });
