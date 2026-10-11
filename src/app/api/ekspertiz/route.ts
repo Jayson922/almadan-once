@@ -5,6 +5,9 @@
 import { NextResponse } from "next/server";
 import { GoogleGenAI, type GenerateContentConfig } from "@google/genai";
 import { valuate, judge, type CompListing, type DeviceInfo, type PriceRange } from "@/lib/valuation";
+import { parseEkspertizInput } from "@/lib/ekspertizInput";
+import { analyzeFraudRisk } from "@/lib/fraudDetection";
+import { safeRun } from "@/lib/safeRun";
 
 // ---------------------------------------------------------------------------
 // Sabitler ve Süreç Zaman Sınırları
@@ -20,8 +23,6 @@ const COMPS_CACHE_MAX = 60;
 
 const RATE_WINDOW_MS = 10 * 60_000;
 const RATE_MAX = Number(process.env.ANALYZE_RATE_LIMIT || 12);
-
-const MAX_IMAGE_CHARS = 7_000_000;
 
 type Cond = "like_new" | "good" | "fair" | "poor";
 type TechStatus = "doğrulandı" | "tahmini" | "bulunamadı";
@@ -211,56 +212,6 @@ function hostOf(uri: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Girdi Doğrulama ve Güvenlik
-// ---------------------------------------------------------------------------
-
-interface ParsedInput {
-  model: string;
-  listingPrice: number;
-  tags: string[];
-  sellerNote: string;
-  image: { mimeType: string; data: string } | null;
-  imageRejected: boolean;
-}
-
-function parseImage(x: unknown): { image: ParsedInput["image"]; rejected: boolean } {
-  if (typeof x !== "string" || x.length === 0) return { image: null, rejected: false };
-  if (x.length > MAX_IMAGE_CHARS) return { image: null, rejected: true };
-  const m = x.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=\s]+)$/);
-  if (m) return { image: { mimeType: m[1], data: m[2].replace(/\s+/g, "") }, rejected: false };
-  if (/^[A-Za-z0-9+/=\s]{100,}$/.test(x)) {
-    return { image: { mimeType: "image/jpeg", data: x.replace(/\s+/g, "") }, rejected: false };
-  }
-  return { image: null, rejected: true };
-}
-
-function parseInput(body: unknown): ParsedInput {
-  if (!body || typeof body !== "object") throw new HttpError(400, "Geçersiz istek gövdesi.");
-  const b = body as Record<string, unknown>;
-
-  const model = typeof b.model === "string" ? cleanLine(b.model, 120) : "";
-  if (model.length < 2) throw new HttpError(400, "Lütfen geçerli bir cihaz modeli girin.");
-
-  const price = typeof b.listingPrice === "number" ? b.listingPrice : Number(b.listingPrice);
-  if (!Number.isFinite(price) || price < 1000 || price > 1_000_000) {
-    throw new HttpError(400, "Lütfen 1.000 TL ile 1.000.000 TL arasında geçerli bir ilan fiyatı girin.");
-  }
-
-  const tags = Array.isArray(b.tags)
-    ? b.tags
-        .filter((t): t is string => typeof t === "string")
-        .map((t) => cleanLine(t, 40))
-        .filter(Boolean)
-        .slice(0, 12)
-    : [];
-
-  const sellerNote = typeof b.sellerNote === "string" ? cleanBlock(b.sellerNote, 2000) : "";
-  const { image, rejected } = parseImage(b.image);
-
-  return { model, listingPrice: Math.round(price), tags, sellerNote, image, imageRejected: rejected };
-}
-
-// ---------------------------------------------------------------------------
 // Cihaz Bilgisi Türetme
 // ---------------------------------------------------------------------------
 
@@ -389,7 +340,7 @@ async function callGemini(
 function buildSearchPrompt(model: string, sellerNote: string): string {
   const today = new Date().toISOString().slice(0, 10);
   const isUrl = sellerNote && (sellerNote.startsWith("http://") || sellerNote.startsWith("https://") || sellerNote.includes(".com"));
-  
+
   if (isUrl) {
     return `Bugünün tarihi ${today}. Kullanıcının belirttiği şu ilan bağlantısını ve içeriğini Google Search ile derinlemesine incele: "${sellerNote}"
 Ayrıca Türkiye'deki ikinci el pazarında "${model}" için güncel ilanları ve fiyat medyanını araştır.
@@ -456,8 +407,7 @@ Kurallar:
 - Yalnızca Türkçe ve saf JSON döndür (markdown blokları kullanma).
 - Mühendislik ve pazar likiditesi diliyle, son derece profesyonel ve teknik açıklamalar yap.
 - Pil döngü ömrü, OLED piksel yıpranması, silikon performansı, link içeriği ve pazar rasyolarını detaylı açıkla.
-- Verilen sayıları ve kararları ASLA değiştirme.`
-;
+- Verilen sayıları ve kararları ASLA değiştirme.`;
 
 function buildReportPrompt(args: {
   model: string;
@@ -503,7 +453,7 @@ ${args.sellerNote || "Belirtilmemiş"}
   "series": "model ailesi",
   "releaseYear": 2023,
   "summary": "Cihazın makro piyasa konumu, talep esnekliği, link/ilan detayları ve enflasyonist değer kaybı özeti (3-4 cümle)",
-  "technicalComments": "İşlemci mimarisi, batarya kimyası, ekran paneli aşınması, link içeriğindeki riskler ve onarım potansiyeli hakkında derinlemesine teknik analiz (2-3 paragraf)",
+  "technicalComments": "İşlemci mimarisi, batarya kimyasası, ekran paneli aşınması, link içeriğindeki riskler ve onarım potansiyeli hakkında derinlemesine teknik analiz (2-3 paragraf)",
   "technicalItems": [{"area":"İşlemci / Silikon","finding":"...","status":"doğrulandı|tahmini|bulunamadı"}],
   "strengths": ["Bu cihaza, ilana ve link içeriğine özgü avantajlar, max 4 madde"],
   "riskAnalysis": ["Bu modele ve paylaşılan nota/linke özgü somut mühendislik ve piyasa riskleri, 4-6 madde"],
@@ -586,6 +536,7 @@ const TAG_STRENGTHS: Record<string, string> = {
   "Face ID / True Tone Aktif": "Biyometrik sensörlerin ve ekran renk kalibrasyonunun aktif olduğu belirtilmiştir.",
 };
 
+// Yedek kontrol: fraud motoru hata verirse kullanılır.
 function sellerNoteWarnings(note: string): string[] {
   const t = note.toLowerCase();
   const out: string[] = [];
@@ -620,7 +571,9 @@ export async function POST(req: Request) {
     }
 
     const body: unknown = await req.json().catch(() => null);
-    const input = parseInput(body);
+    const parsedInput = parseEkspertizInput(body);
+    if (!parsedInput.ok) throw new HttpError(400, parsedInput.error);
+    const input = parsedInput.data;
 
     const primary = process.env.GEMINI_MODEL || "gemini-3.5-flash";
     const fallback = process.env.GEMINI_FALLBACK_MODEL || "gemini-3.1-flash-lite";
@@ -633,6 +586,9 @@ export async function POST(req: Request) {
     const hasWarranty = input.tags.includes("Garantisi Var");
 
     const warnings: string[] = [];
+    if (input.imageRejected) {
+      warnings.push("Yüklenen görsel geçerli bir JPEG, PNG veya WebP olarak doğrulanamadığı için analize katılmadı.");
+    }
     let usedFallback = false;
     const modelsUsed: string[] = [];
 
@@ -716,7 +672,25 @@ export async function POST(req: Request) {
     if (judgment.suspiciouslyLow) {
       warnings.push("İlan fiyatı piyasa ortalamasının çok altındadır. Dolandırıcılık veya ağır hasar riski mevcuttur.");
     }
-    warnings.push(...sellerNoteWarnings(input.sellerNote));
+
+    // ---- Dolandırıcılık denetimi (fraudDetection motoru; hata olursa eski kontrole düşer) ----
+    const fraudRun = safeRun("dolandiricilik-denetimi", () =>
+      analyzeFraudRisk(
+        input.sellerNote,
+        input.listingPrice,
+        valuation.marketPrice?.min ?? input.listingPrice
+      )
+    );
+    if (fraudRun.status === "ok" && fraudRun.data) {
+      const fraud = fraudRun.data;
+      if (fraud.warnings.length > 0) {
+        warnings.push(`Dolandırıcılık risk seviyesi: ${fraud.riskLevel} (skor: ${fraud.riskScore}/100).`);
+        warnings.push(...fraud.warnings);
+      }
+      if (fraud.riskScore >= 60 && decision === "buy") decision = "negotiate";
+    } else {
+      warnings.push(...sellerNoteWarnings(input.sellerNote));
+    }
 
     // ---- Adım 4: İleri Düzey Mühendislik Raporu Üretimi ----
     let aiText: AiText | null = null;
