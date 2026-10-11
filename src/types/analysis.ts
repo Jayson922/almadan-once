@@ -19,3 +19,4 @@ export interface AnalysisResult {
   sources: unknown[];
   updatedAt?: string;
 }
+export type { TeknikDeğerlendirme, KronikSorun, ExpertiseReport, ListingInputPayload } from './report';

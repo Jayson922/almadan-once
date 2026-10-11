@@ -12,20 +12,20 @@ export function evaluatePhonePrice(
 ): PriceEvaluation {
   const entry = PHONE_PRICE_TABLE.find((item) => item.id === modelId);
 
-  if (!entry || entry.min === null || entry.max === null) {
+  if (!entry || entry.minPrice === null || entry.maxPrice === null) {
     return { verdict: "unknown", marketPrice: null };
   }
 
   const marketPrice: PriceRange = {
-    min: entry.min,
-    max: entry.max,
+    min: entry.minPrice,
+    max: entry.maxPrice,
     currency: "TRY",
   };
 
-  if (listingPrice < entry.min) {
+  if (listingPrice < entry.minPrice) {
     return { verdict: "great_deal", marketPrice };
   }
-  if (listingPrice <= entry.max) {
+  if (listingPrice <= entry.maxPrice) {
     return { verdict: "fair", marketPrice };
   }
   return { verdict: "expensive", marketPrice };

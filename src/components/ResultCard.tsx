@@ -1,107 +1,82 @@
-import type { AnalysisResult } from "@/types/analysis";
+import type { AnalysisResult, PriceVerdict } from "@/types/analysis";
 
-function formatPrice(value: unknown): string {
-  if (typeof value === "number" && !isNaN(value)) {
-    return `${value.toLocaleString("tr-TR")} TL`;
-  }
-  if (value && typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    if (typeof obj.min === "number" && typeof obj.max === "number") {
-      return `${obj.min.toLocaleString("tr-TR")} TL - ${obj.max.toLocaleString("tr-TR")} TL`;
-    }
-  }
-  return "0 TL";
+type Props = { result: AnalysisResult };
+
+const VERDICT_LABELS: Record<PriceVerdict, string> = {
+  great_deal: "Fırsat",
+  fair: "Makul",
+  expensive: "Pahalı",
+  unknown: "Belirsiz",
+};
+
+const VERDICT_STYLES: Record<PriceVerdict, string> = {
+  great_deal: "bg-emerald-100 text-emerald-800",
+  fair: "bg-amber-100 text-amber-800",
+  expensive: "bg-red-100 text-red-800",
+  unknown: "bg-slate-100 text-slate-600",
+};
+
+function formatPrice(value: number, currency: string = "TRY"): string {
+  const symbol = currency === "TRY" ? "TL" : currency;
+  return value.toLocaleString("tr-TR") + " " + symbol;
 }
 
-function renderVerdict(verdict: unknown): string {
-  if (!verdict) return "BELİRSİZ";
-  if (typeof verdict === "string") {
-    const labels: Record<string, string> = {
-      ÇOK_PAHALI: "ÇOK PAHALI",
-      PAHALI: "PAHALI",
-      UYGUN: "UYGUN",
-      ÇOK_UYGUN: "ÇOK UYGUN",
-      expensive: "PAHALI",
-      reasonable: "UYGUN",
-      cheap: "ÇOK UYGUN",
-    };
-    return labels[verdict] ?? verdict;
-  }
-  if (typeof verdict === "object" && verdict !== null) {
-    const obj = verdict as Record<string, unknown>;
-    if (typeof obj.label === "string") {
-      return obj.label;
-    }
-  }
-  return String(verdict);
-}
-
-export default function ResultCard({ result }: { result: AnalysisResult }) {
-  const verdictText = renderVerdict(result.verdict);
-
-  const verdictColors: Record<string, string> = {
-    "ÇOK PAHALI": "bg-red-100 text-red-800 border-red-200",
-    PAHALI: "bg-orange-100 text-orange-800 border-orange-200",
-    UYGUN: "bg-emerald-100 text-emerald-800 border-emerald-200",
-    "ÇOK UYGUN": "bg-blue-100 text-blue-800 border-blue-200",
-  };
+export function ResultCard({ result }: Props) {
+  const market = result.marketPrice;
 
   return (
-    <div className="mt-8 space-y-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-      <div>
-        <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
-          Ürün
+    <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-bold text-slate-900">{result.productName}</h2>
+          {result.isDemo && <span className="text-xs text-slate-400">Demo</span>}
+        </div>
+        <span
+          className={
+            "rounded-full px-3 py-1 text-sm font-semibold " + VERDICT_STYLES[result.verdict]
+          }
+        >
+          {VERDICT_LABELS[result.verdict]}
         </span>
-        <h2 className="text-xl font-bold text-slate-900">{result.phoneName}</h2>
       </div>
 
       <div className="grid grid-cols-2 gap-4 border-t border-slate-100 pt-4">
         <div>
           <span className="text-xs text-slate-500">Depolama</span>
-          <p className="font-semibold text-slate-800">{result.storage}</p>
+          <p className="font-semibold text-slate-800">{result.storage ?? "-"}</p>
         </div>
         <div>
           <span className="text-xs text-slate-500">İlan fiyatı</span>
-          <p className="font-semibold text-slate-800">
-            {formatPrice(result.price)}
-          </p>
+          <p className="font-semibold text-slate-800">{formatPrice(result.listingPrice)}</p>
         </div>
       </div>
 
       <div className="border-t border-slate-100 pt-4">
         <span className="text-xs text-slate-500">Tahmini piyasa</span>
         <p className="font-semibold text-slate-800">
-          {formatPrice(result.minPrice)} - {formatPrice(result.maxPrice)}
+          {market
+            ? formatPrice(market.min, market.currency) +
+              " - " +
+              formatPrice(market.max, market.currency)
+            : "Piyasa aralığı bulunamadı"}
         </p>
-      </div>
-
-      <div className="border-t border-slate-100 pt-4">
-        <span className="text-xs text-slate-500">Fiyat değerlendirmesi</span>
-        <div className="mt-1">
-          <span
-            className={`inline-block rounded-full border px-3 py-1 text-xs font-bold ${
-              verdictColors[verdictText] ?? "bg-slate-100 text-slate-800 border-slate-200"
-            }`}
-          >
-            {verdictText}
-          </span>
-        </div>
       </div>
 
       <div className="border-t border-slate-100 pt-4">
         <span className="text-xs text-slate-500">Karar</span>
         <p className="mt-1 text-sm font-medium text-slate-700">
-          {typeof result.recommendation === "string"
-            ? result.recommendation
-            : "Fiyat değerlendirmesi yapıldı."}
+          {result.recommendation || "Fiyat değerlendirmesi yapıldı."}
         </p>
       </div>
 
       {result.updatedAt && (
         <p className="border-t border-slate-100 pt-3 text-xs text-slate-400">
-          Kaynak: Başlangıç tahmini fiyat tablosu (güncelleme: {result.updatedAt}). Bu aralıklar kesin piyasa verisi değil, tahminidir.
+          Kaynak: Başlangıç tahmini fiyat tablosu (güncelleme: {result.updatedAt}). Bu aralıklar
+          kesin piyasa verisi değil, tahminidir.
         </p>
       )}
     </div>
   );
 }
+
+export default ResultCard;

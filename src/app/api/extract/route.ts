@@ -1,94 +1,101 @@
 import { NextResponse } from "next/server";
-import { PHONE_PRICE_TABLE } from "@/lib/phonePrices";
+import { GoogleGenAI } from "@google/genai";
 
-const apiKey = process.env.GEMINI_API_KEY;
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY || "",
+});
 
 export async function POST(req: Request) {
   try {
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: "API anahtarı yapılandırılmamış." },
-        { status: 500 }
-      );
-    }
+    const body = await req.json();
+    const { image, text } = body; // image: base64 data url, text: optional user note
 
-    const formData = await req.formData();
-    const image = formData.get("image") as File | null;
-
-    if (!image) {
+    if (!image && !text) {
       return NextResponse.json(
-        { error: "Görsel yüklenmedi." },
+        { success: false, error: "Görsel veya metin bulunamadı." },
         { status: 400 }
       );
     }
 
-    const buffer = Buffer.from(await image.arrayBuffer());
-    const mimeType = image.type || "image/jpeg";
-    const base64Data = buffer.toString("base64");
+    const modelName = process.env.GEMINI_MODEL || "gemini-3.5-flash";
+    const contents: any[] = [];
 
-    const modelListPrompt = PHONE_PRICE_TABLE.map(
-      (p) => `- "${p.id}": ${p.name} ${p.storage}`
-    ).join("\n");
+    // Görsel varsa Gemini Vision için hazırla
+    if (image) {
+      const match = image.match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
+      if (match) {
+        const mimeType = match[1];
+        const base64Data = match[2];
+        contents.push({
+          inlineData: {
+            mimeType: mimeType,
+            data: base64Data,
+          },
+        });
+      }
+    }
 
-    const promptText = `
-Sen bir ikinci el telefon ilan analiz asistanısın. Sana verilen ekran görüntüsünden telefon modelini ve fiyatını çıkar.
+    const prompt = `
+Sen profesyonel bir ikinci el akıllı telefon ekspertiz ve yapay zeka analiz asistanısın. 
+Gönderilen görseli ve/veya ek metni dikkatlice analiz et.
 
-Aşağıdaki model listesinden görseldeki telefona en uygun olan modelId değerini seç:
-${modelListPrompt}
-
-Sadece ve sadece aşağıdaki JSON formatında yanıt ver:
+Aşağıdaki bilgileri kesinlikle geçerli bir JSON formatında (ekstra Markdown blokları veya açıklamalar eklemeden, sadece ham JSON) döndür:
 {
-  "modelId": "seçtiğin_model_id_veya_null",
-  "price": number_veya_null
+  "brand": "Marka (örn: Apple, Samsung, Xiaomi)",
+  "model": "Model adı ve seri (örn: iPhone 13, Galaxy S22)",
+  "storage": "Depolama alanı (örn: 128GB, 256GB - bulamazsan null)",
+  "condition": "Kondisyon durumu (şu değerlerden biri olmalı: 'like_new', 'good', 'fair', 'poor')",
+  "extractedPrice": Sayısal fiyat değeri (eğer görselde veya metinde ilan fiyatı varsa rakam olarak, yoksa null),
+  "extractedTitle": "Cihazın tam tanımlayıcı başlığı (örn: Apple iPhone 13 128GB)",
+  "sellerNote": "Görselden veya metinden çıkarılan satıcı Notu / Durum açıklaması"
 }
 
-Fiyatı sadece sayı olarak yaz (örn: 25000). Eğer model veya fiyat okunamıyorsa null ver. Başka hiçbir açıklama yazma.
-    `;
+Eğer depolama veya kondisyon net değilse mantıklı varsayılanlar seç (kondisyon için varsayılan 'good'). Kesinlikle sadece JSON döndür.
+`;
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                { text: promptText },
-                {
-                  inline_data: {
-                    mime_type: mimeType,
-                    data: base64Data,
-                  },
-                },
-              ],
-            },
-          ],
-        }),
-      }
-    );
-
-    if (!response.ok) {
-      return NextResponse.json({ modelId: null, price: null });
+    contents.push(prompt);
+    if (text) {
+      contents.push(`Ek Not: ${text}`);
     }
 
-    const result = await response.json();
-    const responseText =
-      result?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return NextResponse.json({ modelId: null, price: null });
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    return NextResponse.json({
-      modelId: parsed.modelId ?? null,
-      price: typeof parsed.price === "number" ? parsed.price : null,
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents: contents,
     });
-  } catch {
-    return NextResponse.json({ modelId: null, price: null });
+
+    const rawText = response.text || "";
+    // JSON temizliği (Markdown bloklarını temizle)
+    const cleanedJsonText = rawText
+      .replace(/```json/g, "")
+      .replace(/```/g, "")
+      .trim();
+
+    let extractedData;
+    try {
+      extractedData = JSON.parse(cleanedJsonText);
+    } catch (e) {
+      console.error("JSON parse hatası:", rawText);
+      // Fallback yapı
+      extractedData = {
+        brand: "Bilinmiyor",
+        model: "Akıllı Telefon",
+        storage: "128GB",
+        condition: "good",
+        extractedPrice: null,
+        extractedTitle: "İkinci El Akıllı Telefon",
+        sellerNote: text || "Görselden analiz edildi.",
+      };
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: extractedData,
+    });
+  } catch (error: any) {
+    console.error("Extract API Hatası:", error);
+    return NextResponse.json(
+      { success: false, error: error.message || "Görsel analiz edilemedi." },
+      { status: 500 }
+    );
   }
 }
