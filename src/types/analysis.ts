@@ -1,12 +1,21 @@
-export type PriceVerdict = "ÇOK_PAHALI" | "PAHALI" | "UYGUN" | "ÇOK_UYGUN";
+export type PriceVerdict = "great_deal" | "fair" | "expensive" | "unknown";
+
+export interface PriceRange {
+  min: number;
+  max: number;
+  currency: string;
+}
 
 export interface AnalysisResult {
-  phoneName: string;
-  storage: string;
-  price: number;
-  minPrice: number;
-  maxPrice: number;
-  verdict: PriceVerdict | string;
+  isDemo: boolean;
+  category: string;
+  productName: string;
+  storage?: string;
+  listingPrice: number;
+  marketPrice: PriceRange | null;
+  verdict: PriceVerdict;
   recommendation: string;
+  confidence: number | string | null;
+  sources: unknown[];
   updatedAt?: string;
 }
