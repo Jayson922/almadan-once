@@ -1,13 +1,35 @@
 // src/app/api/ekspertiz/route.ts
 // Ekspertiz hattı: (1) Google Search ile ilan/link analizi, (2) JSON çıkarım, (3) kodla değerleme ve karar,
 // (4) yapay zeka ile mühendislik düzeyinde teknik rapor. Sayıların, kararın ve rozetin tamamı KODDA hesaplanır.
+// Yeterli gerçek ilan yoksa sahte veri üretilmez; piyasa aralığı boş kalır veya "tahmini" olarak işaretlenir.
 
 import { NextResponse } from "next/server";
 import { GoogleGenAI, type GenerateContentConfig } from "@google/genai";
-import { valuate, judge, type CompListing, type DeviceInfo, type PriceRange } from "@/lib/valuation";
+import {
+  valuate,
+  judge,
+  type CompListing,
+  type Decision,
+  type DeviceInfo,
+  type PriceRange,
+  type UsedComp,
+} from "@/lib/valuation";
 import { parseEkspertizInput } from "@/lib/ekspertizInput";
 import { analyzeFraudRisk } from "@/lib/fraudDetection";
 import { safeRun } from "@/lib/safeRun";
+import type {
+  AlternativeListing,
+  AlternativesStatus,
+  DeliveryType,
+  DeviationBand,
+  EkspertizCondition,
+  EkspertizReport,
+  PlatformStat,
+  PriceDeviation,
+  SourceLink,
+  TechItem,
+  TechStatus,
+} from "@/types/ekspertiz";
 
 // ---------------------------------------------------------------------------
 // Sabitler ve Süreç Zaman Sınırları
@@ -24,18 +46,19 @@ const COMPS_CACHE_MAX = 60;
 const RATE_WINDOW_MS = 10 * 60_000;
 const RATE_MAX = Number(process.env.ANALYZE_RATE_LIMIT || 12);
 
-type Cond = "like_new" | "good" | "fair" | "poor";
-type TechStatus = "doğrulandı" | "tahmini" | "bulunamadı";
+/** Piyasa alt sınırının bu oranının altındaki ilanlar "avantajlı alternatif" olarak önerilmez (şüpheli derecede ucuz). */
+const SUSPICIOUS_LOW_RATIO = 0.75;
+const MAX_ALTERNATIVES = 4;
 
-interface TechItem {
-  area: string;
-  finding: string;
-  status: TechStatus;
+/** Çıkarılan ilana, ilanda açıkça yazıyorsa eklenen ek bilgiler. */
+interface EnrichedComp extends CompListing {
+  sellerTrust: number | null;
+  delivery: DeliveryType | null;
 }
 
-interface SourceLink {
-  title: string;
-  uri: string;
+interface CompExtras {
+  sellerTrust: number | null;
+  delivery: DeliveryType | null;
 }
 
 interface AiText {
@@ -83,7 +106,7 @@ class HttpError extends Error {
 // ---------------------------------------------------------------------------
 
 interface CompsEntry {
-  comps: CompListing[];
+  comps: EnrichedComp[];
   sourceLinks: SourceLink[];
   groundingCount: number;
   at: number;
@@ -177,8 +200,27 @@ function fmtMoney(n: number): string {
   return new Intl.NumberFormat("tr-TR").format(Math.round(n)) + " TL";
 }
 
+function fmtPct(n: number): string {
+  return String(Math.abs(n)).replace(".", ",");
+}
+
 function round100(n: number): number {
   return Math.round(n / 100) * 100;
+}
+
+/** (price - ref) / ref yüzdesi, bir ondalık. ref geçersizse null. */
+function pctDiff(price: number, ref: number): number | null {
+  if (!Number.isFinite(price) || !Number.isFinite(ref) || ref <= 0) return null;
+  return Math.round(((price - ref) / ref) * 1000) / 10;
+}
+
+function bandOf(dev: number | null): DeviationBand | null {
+  if (dev === null) return null;
+  if (dev <= -20) return "much_below";
+  if (dev < -5) return "below";
+  if (dev <= 5) return "near";
+  if (dev < 20) return "above";
+  return "much_above";
 }
 
 function extractJson(text: string): unknown {
@@ -211,6 +253,10 @@ function hostOf(uri: string): string {
   }
 }
 
+function urlKey(u: string): string {
+  return u.toLowerCase().split("?")[0].split("#")[0].replace(/\/+$/, "");
+}
+
 // ---------------------------------------------------------------------------
 // Cihaz Bilgisi Türetme
 // ---------------------------------------------------------------------------
@@ -220,7 +266,7 @@ function deriveStorage(model: string): string {
   return m ? `${m[1]}${m[2].toUpperCase()}` : "";
 }
 
-function deriveCondition(tags: string[]): Cond {
+function deriveCondition(tags: string[]): EkspertizCondition {
   const has = (t: string) => tags.includes(t);
   if (has("Çizikler Var")) return "fair";
   const scratched = has("Ufak Çizikler Var");
@@ -230,7 +276,7 @@ function deriveCondition(tags: string[]): Cond {
   return "good";
 }
 
-const COND_LABEL: Record<Cond, string> = {
+const COND_LABEL: Record<EkspertizCondition, string> = {
   like_new: "Çok iyi (sıfır ayarında)",
   good: "İyi",
   fair: "Orta (belirgin çizik)",
@@ -290,6 +336,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** Arama sonucu bağlantıları çoğunlukla yönlendirme adresidir; bu durumda sayfa başlığı (alan adı) tercih edilir. */
+function sourceName(link: SourceLink): string {
+  const host = hostOf(link.uri);
+  const isRedirect = host.includes("vertexaisearch") || host.endsWith("google.com");
+  if (isRedirect && link.title) return link.title;
+  return host || link.title;
+}
+
 async function callGemini(
   ai: GoogleGenAI,
   models: string[],
@@ -337,6 +391,10 @@ async function callGemini(
 // Pazar Taraması, Link Analizi ve Veri Yapılandırma
 // ---------------------------------------------------------------------------
 
+const LISTING_LINE_FORMAT = "- [Kaynak] Başlık | Fiyat TL | Tarih | Bağlantı | Satıcı puanı | Teslimat";
+const LISTING_EXTRA_RULES = `- Satıcı puanı ve teslimat türü (kargo / elden / ikisi) bilgisini YALNIZCA ilanda ya da arama sonucunda açıkça yazıyorsa ver. Yazmıyorsa "yok" yaz. Tahmin etme, uydurma.
+- Bağlantı yoksa "yok" yaz. Bağlantıyı asla uydurma.`;
+
 function buildSearchPrompt(model: string, sellerNote: string): string {
   const today = new Date().toISOString().slice(0, 10);
   const isUrl = sellerNote && (sellerNote.startsWith("http://") || sellerNote.startsWith("https://") || sellerNote.includes(".com"));
@@ -347,7 +405,8 @@ Ayrıca Türkiye'deki ikinci el pazarında "${model}" için güncel ilanları ve
 Kurallar:
 - İlanın detaylarını, fiyatını ve içerik bağlamını tam olarak analiz et.
 - Cevabın ilk satırı tam olarak "İLANLAR:" olsun, altında ilgili ilanlar için tek satır yer alsın.
-- Satır formatı: - [Kaynak] Başlık | Fiyat TL | Tarih | Bağlantı
+- Satır formatı: ${LISTING_LINE_FORMAT}
+${LISTING_EXTRA_RULES}
 - En fazla 15 satır döndür.`;
   }
 
@@ -357,7 +416,8 @@ Kurallar:
 - Sadece gerçek ve güncel ilanları listele. Uydurma veri ekleme.
 - Aksesuar, kılıf, yedek parça ve sıfır ürünleri ele.
 - Cevabın ilk satırı tam olarak "İLANLAR:" olsun, altında her ilan için tek satır yer alsın.
-- Satır formatı: - [Kaynak] Başlık | Fiyat TL | Tarih | Bağlantı (yok)
+- Satır formatı: ${LISTING_LINE_FORMAT}
+${LISTING_EXTRA_RULES}
 - En fazla 15 satır döndür.`;
 }
 
@@ -367,7 +427,10 @@ Kurallar:
 - Sadece geçerli ilanları al, uydurma fiyat ekleme.
 - Fiyat TL cinsinden tam sayı olsun.
 - "condition" yalnızca "like_new", "good", "fair" veya "poor" olabilir.
-- Çıktı yalnızca saf JSON dizisi olsun: [{"title":"","price":0,"source":"","condition":"good","date":null,"url":null}]
+- "sellerTrust": satıcı puanı metinde açıkça yazıyorsa 0-100 aralığına çevirilmiş sayı (örn. 5 üzerinden 4.8 ise 96), yazmıyorsa null. Tahmin etme.
+- "delivery": yalnızca "kargo", "elden" veya "ikisi"; metinde açıkça yazmıyorsa null. Tahmin etme.
+- "url": yalnızca metinde gerçekten yazan tam bağlantı, yoksa null. Bağlantı uydurma.
+- Çıktı yalnızca saf JSON dizisi olsun: [{"title":"","price":0,"source":"","condition":"good","date":null,"url":null,"sellerTrust":null,"delivery":null}]
 
 HAM METİN:
 ${raw.slice(0, 12000)}`;
@@ -377,9 +440,23 @@ function normCondition(x: unknown): string | undefined {
   return x === "like_new" || x === "good" || x === "fair" || x === "poor" ? x : undefined;
 }
 
-function toComps(parsed: unknown): CompListing[] {
+function normDelivery(x: unknown): DeliveryType | null {
+  return x === "kargo" || x === "elden" || x === "ikisi" ? x : null;
+}
+
+function normTrust(x: unknown): number | null {
+  let n = NaN;
+  if (typeof x === "number") {
+    n = x;
+  } else if (typeof x === "string" && /^\d{1,3}([.,]\d+)?$/.test(x.trim())) {
+    n = Number(x.trim().replace(",", "."));
+  }
+  return Number.isFinite(n) && n >= 0 && n <= 100 ? Math.round(n) : null;
+}
+
+function toComps(parsed: unknown): EnrichedComp[] {
   if (!Array.isArray(parsed)) return [];
-  const out: CompListing[] = [];
+  const out: EnrichedComp[] = [];
   for (const it of parsed) {
     if (!it || typeof it !== "object") continue;
     const o = it as Record<string, unknown>;
@@ -389,13 +466,100 @@ function toComps(parsed: unknown): CompListing[] {
     if (!Number.isFinite(price)) continue;
     price = Math.round(price);
     if (!title || price <= 0) continue;
-    const comp: CompListing = { title, price, source, condition: normCondition(o.condition) };
+    const comp: EnrichedComp = {
+      title,
+      price,
+      source,
+      condition: normCondition(o.condition),
+      sellerTrust: normTrust(o.sellerTrust),
+      delivery: normDelivery(o.delivery),
+    };
     if (typeof o.date === "string" && /^\d{4}-\d{2}-\d{2}/.test(o.date)) comp.date = o.date;
     if (typeof o.url === "string" && /^https?:\/\//.test(o.url)) comp.url = o.url.slice(0, 300);
     out.push(comp);
     if (out.length >= 40) break;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Alternatif Seçimi: yalnızca gerçek, bağlantılı ve ilan fiyatından ucuz ilanlar
+// ---------------------------------------------------------------------------
+
+function buildReason(args: {
+  savingsTL: number;
+  savingsPct: number;
+  vsMedianPct: number | null;
+  sellerTrust: number | null;
+  delivery: DeliveryType | null;
+  grounded: boolean;
+}): string {
+  const parts: string[] = [`Mevcut ilandan ${fmtMoney(args.savingsTL)} (%${fmtPct(args.savingsPct)}) daha ucuz`];
+  if (args.vsMedianPct !== null) {
+    parts.push(
+      args.vsMedianPct <= 0
+        ? `piyasa medyanının %${fmtPct(args.vsMedianPct)} altında`
+        : `piyasa medyanının %${fmtPct(args.vsMedianPct)} üstünde`
+    );
+  }
+  if (args.sellerTrust !== null) parts.push(`ilanda belirtilen satıcı puanı ${args.sellerTrust}/100`);
+  if (args.delivery === "elden") parts.push("elden teslim seçeneği var");
+  if (args.delivery === "ikisi") parts.push("elden teslim ve kargo seçeneği var");
+  if (args.delivery === "kargo") parts.push("yalnızca kargo, ödemeden önce cihaz test edilemez");
+  if (!args.grounded) parts.push("bağlantının alan adı arama sonuçlarında doğrulanamadı, ilanı açıp kontrol edin");
+  return parts.join("; ") + ".";
+}
+
+function pickAlternatives(args: {
+  usedComps: UsedComp[];
+  listingPrice: number;
+  market: PriceRange;
+  extras: Map<string, CompExtras>;
+  isGrounded: (url: string) => boolean;
+}): AlternativeListing[] {
+  const floor = args.market.min * SUSPICIOUS_LOW_RATIO;
+  const seen = new Set<string>();
+  const out: AlternativeListing[] = [];
+
+  for (const c of args.usedComps) {
+    if (!c.url || !/^https?:\/\//.test(c.url)) continue;
+    if (c.price >= args.listingPrice) continue;
+    if (c.price < floor) continue;
+    const key = urlKey(c.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const extra = args.extras.get(key);
+    const sellerTrust = extra?.sellerTrust ?? null;
+    const delivery = extra?.delivery ?? null;
+    const grounded = args.isGrounded(c.url);
+    const savingsTL = args.listingPrice - c.price;
+    const savingsPct = pctDiff(args.listingPrice, c.price) === null ? 0 : Math.round((savingsTL / args.listingPrice) * 1000) / 10;
+
+    out.push({
+      title: c.title,
+      price: c.price,
+      source: c.source,
+      url: c.url,
+      urlGrounded: grounded,
+      savingsTL,
+      savingsPct,
+      sellerTrust,
+      delivery,
+      reason: buildReason({
+        savingsTL,
+        savingsPct,
+        vsMedianPct: pctDiff(c.price, args.market.median),
+        sellerTrust,
+        delivery,
+        grounded,
+      }),
+      searchQuery: `${c.source} ${c.title}`.slice(0, 120),
+    });
+  }
+
+  out.sort((a, b) => a.price - b.price || (b.sellerTrust ?? -1) - (a.sellerTrust ?? -1));
+  return out.slice(0, MAX_ALTERNATIVES);
 }
 
 // ---------------------------------------------------------------------------
@@ -470,7 +634,7 @@ function toTechStatus(x: unknown): TechStatus {
   return x === "doğrulandı" || x === "tahmini" || x === "bulunamadı" ? x : "tahmini";
 }
 
-function toAiText(parsed: unknown, listingPrice: number, estimateMode: boolean): AiText | null {
+function toAiText(parsed: unknown, estimateMode: boolean): AiText | null {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const o = parsed as Record<string, unknown>;
 
@@ -491,7 +655,7 @@ function toAiText(parsed: unknown, listingPrice: number, estimateMode: boolean):
     const r = o.estimatedRange as Record<string, unknown>;
     const min = Number(r.min);
     const max = Number(r.max);
-    if (Number.isFinite(min) && Number.isFinite(max) && min >= 1000 && max > min) {
+    if (Number.isFinite(min) && Number.isFinite(max) && min >= 1000 && max > min && max <= min * 3) {
       range = { min: round100(min), max: round100(max) };
     }
   }
@@ -594,7 +758,7 @@ export async function POST(req: Request) {
 
     // ---- Adım 1 & 2: Pazar Taraması ve Link Analizi (Önbellek Kontrollü) ----
     const cacheKey = `${input.model.toLowerCase().replace(/\s+/g, " ")}|${storage}`;
-    let comps: CompListing[] = [];
+    let comps: EnrichedComp[] = [];
     let sourceLinks: SourceLink[] = [];
     let groundingCount = 0;
     let compsFromCache = false;
@@ -641,7 +805,7 @@ export async function POST(req: Request) {
         }
       } catch (err) {
         console.error("[ekspertiz] pazar/link tarama hatası:", err instanceof Error ? err.message : err);
-        warnings.push("Canlı pazar ve link taraması sınırlı kaldı, değerleme teknik amortisman matrisiyle desteklendi.");
+        warnings.push("Canlı pazar ve link taraması tamamlanamadı; piyasa aralığı canlı ilanlarla hesaplanamadı.");
       }
       if (searchOk && comps.length > 0 && !hasLinkOrNote) {
         setCachedComps(cacheKey, { comps, sourceLinks, groundingCount, at: Date.now() });
@@ -651,23 +815,22 @@ export async function POST(req: Request) {
     // ---- Adım 3: Matematiksel Değerleme ve Karar Motoru ----
     const device: DeviceInfo = { model: input.model, storage, condition, hasBox, hasWarranty };
     const valuation = valuate(device, comps);
-    let confidence = valuation.confidence;
+    const judgment = judge(input.listingPrice, valuation);
+    const estimateMode = valuation.estimated;
 
-    if (valuation.marketPrice) {
+    // Güven puanı: yeterli gerçek ilan yoksa 0 (doğrulanmış güven yok).
+    let confidence = valuation.confidence;
+    if (!estimateMode) {
       if (!storage) confidence = Math.max(30, confidence - 10);
       if (groundingCount === 0) confidence = Math.min(confidence, 45);
     }
-    const judgment = judge(input.listingPrice, { ...valuation, confidence });
-    if (judgment.estimated) confidence = 20;
 
-    let decision = judgment.decision;
-    const estimateMode = judgment.estimated;
-    if (valuation.marketPrice && groundingCount === 0) {
+    let decision: Decision = judgment.decision;
+    if (estimateMode) {
+      warnings.push("Yeterli canlı ilan bulunamadı; piyasa aralığı doğrulanamadı ve fiyat kararı verilemiyor.");
+    } else if (groundingCount === 0) {
       warnings.push("İlan bilgileri harici web kaynaklarıyla doğrulanamadı.");
       if (decision === "buy") decision = "negotiate";
-    }
-    if (estimateMode) {
-      warnings.push("Yeterli ilan verisi bulunamadı; fiyatlar silikon amortisman matrisine dayanmaktadır.");
     }
     if (judgment.suspiciouslyLow) {
       warnings.push("İlan fiyatı piyasa ortalamasının çok altındadır. Dolandırıcılık veya ağır hasar riski mevcuttur.");
@@ -725,19 +888,20 @@ export async function POST(req: Request) {
       );
       modelsUsed.push(report.model);
       usedFallback = usedFallback || report.usedFallback;
-      aiText = toAiText(extractJson(report.text), input.listingPrice, estimateMode);
+      aiText = toAiText(extractJson(report.text), estimateMode);
     } catch (err) {
       console.error("[ekspertiz] rapor metin üretim hatası:", err instanceof Error ? err.message : err);
       warnings.push("Yapay zeka teknik yorumları üretilemedi, sayısal sonuçlar koddan hesaplandı.");
     }
 
-    // ---- Çıktıları Birleştirme ve Alternatif Eşleştirme ----
+    // ---- Piyasa aralığı: gerçek ilanlardan ya da (yoksa) yapay zeka tahmininden ----
     let marketPrice: PriceRange | null = valuation.marketPrice;
     let marketPriceIsEstimate = false;
     if (!marketPrice && aiText?.estimatedRange) {
       const { min, max } = aiText.estimatedRange;
       marketPrice = { min, max, median: round100((min + max) / 2), currency: "TL" };
       marketPriceIsEstimate = true;
+      warnings.push("Gösterilen piyasa aralığı yapay zeka tahminidir; canlı ilanlarla doğrulanmamıştır.");
     }
 
     let targetOffer = judgment.suggestedOffer;
@@ -747,11 +911,31 @@ export async function POST(req: Request) {
       walkAwayPrice = Math.max(marketPrice.max, targetOffer);
     }
 
-    const median = valuation.marketPrice?.median ?? null;
-    const tactics: string[] = [
-      `İlk teklifinizi ${fmtMoney(targetOffer)} olarak belirleyin ve ${fmtMoney(walkAwayPrice)} sınırını aşmayın.`,
-    ];
-    if (median) tactics.push(`Piyasa medyanı ${fmtMoney(median)} seviyesindedir. Satıcı ile görüşürken bu istatistiği referans alın.`);
+    // ---- Sapma matrisi: yalnızca gerçek ilanlardan hesaplanan aralıkla ----
+    const vm = valuation.marketPrice;
+    const priceDeviation: PriceDeviation = vm
+      ? {
+          vsMedianPct: judgment.deviationPct,
+          vsMinPct: pctDiff(input.listingPrice, vm.min),
+          vsMaxPct: pctDiff(input.listingPrice, vm.max),
+          band: bandOf(judgment.deviationPct),
+        }
+      : { vsMedianPct: null, vsMinPct: null, vsMaxPct: null, band: null };
+
+    // ---- Pazarlık taktikleri ----
+    const tactics: string[] = [];
+    if (vm) {
+      tactics.push(`İlk teklifinizi ${fmtMoney(targetOffer)} olarak belirleyin ve ${fmtMoney(walkAwayPrice)} sınırını aşmayın.`);
+      tactics.push(`Piyasa medyanı ${fmtMoney(vm.median)} seviyesindedir. Satıcı ile görüşürken bu istatistiği referans alın.`);
+    } else if (marketPriceIsEstimate) {
+      tactics.push(
+        `Doğrulanmamış yapay zeka tahminine göre ilk teklif ${fmtMoney(targetOffer)}, üst sınır ${fmtMoney(walkAwayPrice)}. Kesin piyasa referansı değildir.`
+      );
+    } else {
+      tactics.push(
+        `Doğrulanmış piyasa verisi olmadığı için teklif ilan fiyatının yaklaşık %8 altı (${fmtMoney(targetOffer)}) olarak varsayıldı. Bu bir piyasa referansı değildir; benzer ilanları elle karşılaştırın.`
+      );
+    }
     tactics.push(...(aiText?.tactics ?? []));
 
     const strengths = uniqueByPrefix(
@@ -778,26 +962,40 @@ export async function POST(req: Request) {
     const riskAnalysis = uniqueByPrefix([...warnings, ...(aiText?.riskAnalysis ?? [])], 10);
     const checklist = uniqueByPrefix([...BASE_CHECKLIST, ...(aiText?.checklist ?? [])], 14);
 
-    const betterAlternatives = valuation.basis.usedComps
-      .filter((c) => c.price >= input.listingPrice * 0.9 && c.price <= input.listingPrice * 1.1)
-      .sort((a, b) => a.price - b.price)
-      .slice(0, 4)
-      .map((c) => {
-        const diff = Math.abs(c.price - input.listingPrice);
-        const advantage =
-          c.price < input.listingPrice
-            ? `Mevcut ilandan ${fmtMoney(diff)} daha ekonomik.`
-            : `Fiyat seviyesi yakın, ilan detaylarını karşılaştırın.`;
-        return {
-          title: c.title,
-          price: c.price,
-          source: c.source,
-          advantage,
-          searchQuery: `${c.source} ${c.title}`.slice(0, 120),
-        };
-      });
+    // ---- Alternatifler: yalnızca gerçek, bağlantılı, ilan fiyatından ucuz ilanlar ----
+    const extrasByUrl = new Map<string, CompExtras>();
+    for (const c of comps) {
+      if (c.url) extrasByUrl.set(urlKey(c.url), { sellerTrust: c.sellerTrust, delivery: c.delivery });
+    }
 
-    const groundedNames = sourceLinks.map((l) => hostOf(l.uri) || l.title).filter(Boolean);
+    const groundedHosts = new Set<string>();
+    for (const l of sourceLinks) {
+      const h = hostOf(l.uri);
+      if (h) groundedHosts.add(h);
+      const t = l.title.toLowerCase().replace(/^www\./, "");
+      if (t) groundedHosts.add(t);
+    }
+    const isGrounded = (url: string): boolean => {
+      const h = hostOf(url);
+      return h !== "" && groundedHosts.has(h);
+    };
+
+    let alternativesStatus: AlternativesStatus = "insufficient_data";
+    let betterAlternatives: AlternativeListing[] = [];
+    if (vm) {
+      betterAlternatives = pickAlternatives({
+        usedComps: valuation.basis.usedComps,
+        listingPrice: input.listingPrice,
+        market: vm,
+        extras: extrasByUrl,
+        isGrounded,
+      });
+      alternativesStatus = betterAlternatives.length > 0 ? "found" : "none_found";
+    }
+    const bestAlternative: AlternativeListing | null = betterAlternatives[0] ?? null;
+
+    // ---- Veri dayanağı: kaynaklar ve platform dağılımı ----
+    const groundedNames = sourceLinks.map(sourceName).filter(Boolean);
     const sourceKeys = new Set<string>();
     const sources: string[] = [];
     for (const name of [...valuation.basis.sources, ...groundedNames]) {
@@ -808,8 +1006,16 @@ export async function POST(req: Request) {
       if (sources.length >= 12) break;
     }
 
-    const report = {
+    const platformCount = new Map<string, number>();
+    for (const c of comps) platformCount.set(c.source, (platformCount.get(c.source) ?? 0) + 1);
+    const platforms: PlatformStat[] = Array.from(platformCount.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([name, receivedCount]) => ({ name, receivedCount }));
+
+    const report: EkspertizReport = {
       category: "Akıllı Telefon İleri Düzey Mühendislik Analizi",
+      deviceCategory: "smartphone",
       productName: input.model,
       listingPrice: input.listingPrice,
       marketPrice,
@@ -818,8 +1024,12 @@ export async function POST(req: Request) {
       decision,
       suspiciouslyLow: judgment.suspiciouslyLow,
       estimated: estimateMode,
-      recommendation: judgment.message,
-      confidence,
+      recommendation:
+        marketPriceIsEstimate && marketPrice
+          ? `${judgment.message} Yapay zeka tahmini aralık (doğrulanmadı): ${fmtMoney(marketPrice.min)} - ${fmtMoney(marketPrice.max)}.`
+          : judgment.message,
+      confidence: estimateMode ? 0 : confidence,
+      priceDeviation,
       identity: {
         brand: aiText?.brand ?? null,
         series: aiText?.series ?? null,
@@ -830,9 +1040,11 @@ export async function POST(req: Request) {
         hasBox,
         hasWarranty,
       },
-      summary: aiText?.summary || "Makro piyasa ve değerleme analizi başarıyla tamamlandı.",
+      summary: aiText?.summary || "Makro piyasa ve değerleme analizi tamamlandı.",
       technicalComments: aiText?.technicalComments || "Cihazın donanım bileşenleri ve pazar likiditesi incelendi.",
       technicalItems: aiText?.technicalItems ?? [],
+      hardwareMetrics: [],
+      repairability: null,
       strengths,
       riskAnalysis,
       missingData,
@@ -844,14 +1056,18 @@ export async function POST(req: Request) {
         walkAwayPrice,
         tactics: tactics.slice(0, 5),
       },
+      alternativesStatus,
+      bestAlternative,
       betterAlternatives,
-      alternatives: [] as string[],
+      alternatives: [],
       basis: {
         ...valuation.basis,
         sources,
+        mode: estimateMode ? "estimated" : "live",
         sourceLinks: sourceLinks.slice(0, 8),
         groundedSourceCount: groundingCount,
         fromCache: compsFromCache,
+        platforms,
       },
       disclaimer: "Bu rapor yapay zeka ve açık web verilerine dayanan profesyonel bir karar desteğidir.",
       generatedAt: new Date().toISOString(),
