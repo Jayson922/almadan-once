@@ -3,6 +3,10 @@ import { z } from "zod";
 export const MIN_PRICE_TL = 1_000;
 export const MAX_PRICE_TL = 1_000_000;
 export const MAX_IMAGE_CHARS = 7_000_000;
+export const MIN_BATTERY_PCT = 50;
+export const MAX_BATTERY_PCT = 100;
+export const MIN_USAGE_MONTHS = 0;
+export const MAX_USAGE_MONTHS = 120;
 
 export type ImageMime = "image/jpeg" | "image/png" | "image/webp";
 
@@ -13,6 +17,10 @@ export interface EkspertizInput {
   sellerNote: string;
   image: { mimeType: ImageMime; data: string } | null;
   imageRejected: boolean;
+  /** Kullanıcı beyanı pil sağlığı yüzdesi; girilmediyse null */
+  batteryHealthPct: number | null;
+  /** Cihazın kaç aydır kullanıldığı; girilmediyse null */
+  usageMonths: number | null;
 }
 
 export type EkspertizParseResult =
@@ -72,7 +80,21 @@ function parseImage(x: unknown): { image: EkspertizInput["image"]; rejected: boo
   return { image: { mimeType, data }, rejected: false };
 }
 
+type OptionalIntResult = { ok: true; value: number | null } | { ok: false };
+
+/** Boş, null ya da boş metin null döner. Aralık dışı ya da sayı olmayan değer hata sayılır. */
+function parseOptionalInt(x: unknown, min: number, max: number): OptionalIntResult {
+  if (x === undefined || x === null) return { ok: true, value: null };
+  const raw = typeof x === "string" ? x.trim().replace(",", ".") : x;
+  if (raw === "") return { ok: true, value: null };
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n) || n < min || n > max) return { ok: false };
+  return { ok: true, value: Math.round(n) };
+}
+
 const PRICE_MSG = `Lütfen ${MIN_PRICE_TL.toLocaleString("tr-TR")} TL ile ${MAX_PRICE_TL.toLocaleString("tr-TR")} TL arasında geçerli bir ilan fiyatı girin.`;
+const BATTERY_MSG = `Pil sağlığı %${MIN_BATTERY_PCT} ile %${MAX_BATTERY_PCT} arasında bir değer olmalı.`;
+const USAGE_MSG = `Kullanım süresi ${MIN_USAGE_MONTHS} ile ${MAX_USAGE_MONTHS} ay arasında olmalı.`;
 
 const inputSchema = z.object({
   model: z.string({ error: "Lütfen geçerli bir cihaz modeli girin." }),
@@ -80,6 +102,8 @@ const inputSchema = z.object({
   tags: z.array(z.unknown(), { error: "Etiketler liste olmalı." }).optional(),
   sellerNote: z.string({ error: "Satıcı notu metin olmalı." }).optional(),
   image: z.unknown().optional(),
+  batteryHealthPct: z.union([z.number(), z.string(), z.null()], { error: BATTERY_MSG }).optional(),
+  usageMonths: z.union([z.number(), z.string(), z.null()], { error: USAGE_MSG }).optional(),
 });
 
 export function parseEkspertizInput(body: unknown): EkspertizParseResult {
@@ -103,6 +127,12 @@ export function parseEkspertizInput(body: unknown): EkspertizParseResult {
     return { ok: false, error: PRICE_MSG };
   }
 
+  const battery = parseOptionalInt(d.batteryHealthPct, MIN_BATTERY_PCT, MAX_BATTERY_PCT);
+  if (!battery.ok) return { ok: false, error: BATTERY_MSG };
+
+  const usage = parseOptionalInt(d.usageMonths, MIN_USAGE_MONTHS, MAX_USAGE_MONTHS);
+  if (!usage.ok) return { ok: false, error: USAGE_MSG };
+
   const tags = (d.tags ?? [])
     .filter((t): t is string => typeof t === "string")
     .map((t) => cleanLine(t, 40))
@@ -121,6 +151,8 @@ export function parseEkspertizInput(body: unknown): EkspertizParseResult {
       sellerNote,
       image,
       imageRejected: rejected,
+      batteryHealthPct: battery.value,
+      usageMonths: usage.value,
     },
   };
 }

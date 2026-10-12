@@ -26,6 +26,9 @@ const MAX_FILE_BYTES = 15 * 1024 * 1024;
 const MAX_DATA_URL_CHARS = 6_000_000;
 const MIN_PRICE = 1000;
 const MAX_PRICE = 1_000_000;
+const MIN_BATTERY = 50;
+const MAX_BATTERY = 100;
+const MAX_USAGE_MONTHS = 120;
 
 const AVAILABLE_TAGS: string[] = [
   "Kutulu & Faturalı",
@@ -169,6 +172,8 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<"image" | "text">("image");
   const [model, setModel] = useState("");
   const [priceDigits, setPriceDigits] = useState("");
+  const [batteryDigits, setBatteryDigits] = useState("");
+  const [usageDigits, setUsageDigits] = useState("");
   const [sellerNote, setSellerNote] = useState("");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
 
@@ -176,6 +181,7 @@ export default function Home() {
   const [imageName, setImageName] = useState("");
   const [imageBusy, setImageBusy] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
+  const [autoFilled, setAutoFilled] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -208,6 +214,7 @@ export default function Home() {
       } else {
         setImageDataUrl(dataUrl);
         setImageName(file.name || "Yüklenen görsel");
+        setAutoFilled(false);
 
         try {
           const extractRes = await fetch("/api/extract", {
@@ -218,18 +225,26 @@ export default function Home() {
           const extractJson = await extractRes.json();
           if (extractRes.ok && extractJson.success && extractJson.data) {
             const ext = extractJson.data;
+            let filled = false;
             if (ext.extractedTitle || ext.model) {
               setModel(ext.extractedTitle || `${ext.brand || ""} ${ext.model} ${ext.storage || ""}`.trim());
+              filled = true;
             }
             if (ext.extractedPrice) {
-              setPriceDigits(ext.extractedPrice.toString());
+              const digits = String(ext.extractedPrice).replace(/\D/g, "").slice(0, 7);
+              if (digits) {
+                setPriceDigits(digits);
+                filled = true;
+              }
             }
             if (ext.sellerNote) {
               setSellerNote(ext.sellerNote);
+              filled = true;
             }
+            setAutoFilled(filled);
           }
         } catch {
-          // AI otomatik doldurma opsiyoneldir
+          // Otomatik doldurma opsiyoneldir
         }
       }
     } catch {
@@ -279,6 +294,7 @@ export default function Home() {
     setImageDataUrl(null);
     setImageName("");
     setImageError(null);
+    setAutoFilled(false);
   };
 
   const toggleTag = (tag: string) => {
@@ -293,11 +309,14 @@ export default function Home() {
     setReport(null);
     setModel("");
     setPriceDigits("");
+    setBatteryDigits("");
+    setUsageDigits("");
     setSellerNote("");
     setSelectedTags([]);
     setImageDataUrl(null);
     setImageName("");
     setImageError(null);
+    setAutoFilled(false);
     setError(null);
     window.scrollTo({ top: 0 });
   };
@@ -319,6 +338,17 @@ export default function Home() {
     const price = Number(priceDigits);
     if (!priceDigits || !Number.isFinite(price) || price < MIN_PRICE || price > MAX_PRICE) {
       setError("Lütfen 1.000 TL ile 1.000.000 TL arasında geçerli bir fiyat girin.");
+      return;
+    }
+
+    const battery = batteryDigits === "" ? null : Number(batteryDigits);
+    if (battery !== null && (!Number.isFinite(battery) || battery < MIN_BATTERY || battery > MAX_BATTERY)) {
+      setError(`Pil sağlığı %${MIN_BATTERY} ile %${MAX_BATTERY} arasında olmalı. Bilmiyorsanız boş bırakın.`);
+      return;
+    }
+    const usageMonths = usageDigits === "" ? null : Number(usageDigits);
+    if (usageMonths !== null && (!Number.isFinite(usageMonths) || usageMonths > MAX_USAGE_MONTHS)) {
+      setError(`Kullanım süresi en fazla ${MAX_USAGE_MONTHS} ay olabilir. Bilmiyorsanız boş bırakın.`);
       return;
     }
 
@@ -346,6 +376,8 @@ export default function Home() {
           tags: selectedTags,
           sellerNote: sellerNote.trim(),
           image: imageDataUrl,
+          batteryHealthPct: battery,
+          usageMonths,
         }),
       });
 
@@ -437,12 +469,12 @@ export default function Home() {
             İkinci el telefonu almadan önce <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-violet-400">30 saniyede</span> kontrol edin
           </h1>
           <p className="text-sm text-zinc-400 max-w-lg mx-auto leading-relaxed">
-            Canlı pazar medyanı, IQR sahte ilan süzgeci ve akıllı alternatif yönlendirmeleriyle dolandırılmayın, cebinizi koruyun.
+            İlan fiyatını canlı ilanlarla karşılaştırır, aykırı fiyatları IQR süzgeciyle eler ve dolandırıcılık işaretlerini tarar. Yeterli canlı ilan bulunamazsa bunu açıkça söyler.
           </p>
           <div className="flex flex-wrap justify-center gap-2 pt-1 text-[11px] font-medium text-zinc-300">
-            <span className="px-3 py-1 rounded-full bg-zinc-900/90 border border-zinc-800 shadow-sm">⚡ Canlı Pazar Taraması</span>
-            <span className="px-3 py-1 rounded-full bg-zinc-900/90 border border-zinc-800 shadow-sm">🛡️ IQR Fiyat Süzgeci</span>
-            <span className="px-3 py-1 rounded-full bg-zinc-900/90 border border-zinc-800 shadow-sm">🎯 Akıllı Alternatifler</span>
+            <span className="px-3 py-1 rounded-full bg-zinc-900/90 border border-zinc-800 shadow-sm">⚡ Canlı İlan Karşılaştırması</span>
+            <span className="px-3 py-1 rounded-full bg-zinc-900/90 border border-zinc-800 shadow-sm">🛡️ IQR Aykırı Fiyat Süzgeci</span>
+            <span className="px-3 py-1 rounded-full bg-zinc-900/90 border border-zinc-800 shadow-sm">🎯 Gerçek İlan Alternatifleri</span>
           </div>
         </header>
 
@@ -487,7 +519,15 @@ export default function Home() {
                   <img src={imageDataUrl} alt="Önizleme" className="w-20 h-20 object-cover rounded-xl border border-zinc-800 shadow-md" />
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-white truncate">{imageName}</p>
-                    <p className="text-[11px] text-emerald-400 font-medium mt-0.5">✓ Görsel yüklendi ve yapay zeka ile eşleştirildi.</p>
+                    {autoFilled ? (
+                      <p className="text-[11px] text-emerald-400 font-medium mt-0.5">
+                        ✓ Görsel yüklendi. Model, fiyat veya not otomatik dolduruldu, alanları kontrol edin.
+                      </p>
+                    ) : (
+                      <p className="text-[11px] text-amber-300 font-medium mt-0.5">
+                        Görsel yüklendi. Otomatik doldurma yapılamadı, alanları elle girin.
+                      </p>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -539,7 +579,7 @@ export default function Home() {
             <div className="bg-zinc-950/80 border border-zinc-800 rounded-2xl p-4 text-xs text-zinc-400 space-y-1.5">
               <p className="font-semibold text-zinc-200 text-sm">💡 İpucu</p>
               <p className="leading-relaxed">
-                İlan platformlarının korumaları nedeniyle direkt linkler okunamamaktadır. İlandaki açıklamayı ve detayları kopyalayıp aşağıdaki <span className="text-indigo-300 font-medium">Satıcı Notu</span> alanına yapıştırabilirsiniz.
+                İlan bağlantıları çoğu zaman güvenilir okunamaz. En doğru sonuç için ilandaki açıklamayı kopyalayıp aşağıdaki <span className="text-indigo-300 font-medium">Satıcı Notu</span> alanına yapıştırın.
               </p>
             </div>
           )}
@@ -603,7 +643,52 @@ export default function Home() {
                 />
                 <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-zinc-400">TL</span>
               </div>
-              <p className="text-[11px] text-zinc-500 pt-1">Anlık canlı piyasa medyanıyla kıyaslanır.</p>
+              <p className="text-[11px] text-zinc-500 pt-1">Bulunabilen canlı ilanların medyanıyla kıyaslanır.</p>
+            </div>
+          </div>
+
+          {/* Pil Sağlığı ve Kullanım Süresi (isteğe bağlı) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div className="space-y-2">
+              <label htmlFor="battery" className="text-[11px] font-bold tracking-wider text-zinc-300 uppercase flex justify-between">
+                <span>PİL SAĞLIĞI (%)</span>
+                <span className="text-zinc-500 font-normal normal-case">isteğe bağlı</span>
+              </label>
+              <div className="relative">
+                <input
+                  id="battery"
+                  type="text"
+                  inputMode="numeric"
+                  value={batteryDigits}
+                  onChange={(e) => setBatteryDigits(e.target.value.replace(/\D/g, "").slice(0, 3))}
+                  placeholder="Örn: 87"
+                  autoComplete="off"
+                  className={`${inputClass} pr-12`}
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-zinc-400">%</span>
+              </div>
+              <p className="text-[11px] text-zinc-500">iPhone: Ayarlar → Pil → Pil Sağlığı. Bilmiyorsanız boş bırakın.</p>
+            </div>
+
+            <div className="space-y-2">
+              <label htmlFor="usage" className="text-[11px] font-bold tracking-wider text-zinc-300 uppercase flex justify-between">
+                <span>KULLANIM SÜRESİ (AY)</span>
+                <span className="text-zinc-500 font-normal normal-case">isteğe bağlı</span>
+              </label>
+              <div className="relative">
+                <input
+                  id="usage"
+                  type="text"
+                  inputMode="numeric"
+                  value={usageDigits}
+                  onChange={(e) => setUsageDigits(e.target.value.replace(/\D/g, "").slice(0, 3))}
+                  placeholder="Örn: 18"
+                  autoComplete="off"
+                  className={`${inputClass} pr-14`}
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-zinc-400">ay</span>
+              </div>
+              <p className="text-[11px] text-zinc-500">Cihazın kaç aydır kullanıldığı, biliniyorsa.</p>
             </div>
           </div>
 
@@ -659,9 +744,9 @@ export default function Home() {
           {loading ? (
             <div className="bg-indigo-600/15 border border-indigo-500/40 p-5 rounded-2xl text-center space-y-3 shadow-inner" aria-live="polite">
               <div className="inline-block animate-spin rounded-full h-7 w-7 border-2 border-indigo-400 border-t-transparent" />
-              <p className="text-sm font-semibold text-indigo-200">Canlı Pazar Taranıyor ve İleri Düzey Rapor Hazırlanıyor...</p>
+              <p className="text-sm font-semibold text-indigo-200">Canlı ilanlar aranıyor ve rapor hazırlanıyor...</p>
               <p className="text-xs text-zinc-400">
-                Geçen süre: {elapsed} sn. IQR sahte ilan süzgeci ve mühendislik motoru çalışıyor.
+                Geçen süre: {elapsed} sn. Aykırı fiyat süzgeci ve mühendislik motoru çalışıyor.
               </p>
               <button
                 type="button"
