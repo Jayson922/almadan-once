@@ -3,6 +3,7 @@
 // Eski tipler (analysis.ts, report.ts) bu dosyadan bağımsızdır; birleştirme ayrı bir görevdir.
 
 import type { Decision, PriceRange, ValuationBasis, Verdict } from "@/lib/valuation";
+import type { MarketResult } from "@/lib/marketEngine";
 
 export type EkspertizCondition = "like_new" | "good" | "fair" | "poor";
 
@@ -165,6 +166,8 @@ export interface EkspertizReport {
   recommendation: string;
   confidence: number;
   priceDeviation: PriceDeviation;
+  /** Piyasa motoru çıktısı (marketEngine.ts). Motor çalışmadıysa veya veri yoksa null/eksik. */
+  market?: MarketResult | null;
   identity: EkspertizIdentity;
   summary: string;
   technicalComments: string;
