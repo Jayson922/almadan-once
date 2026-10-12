@@ -18,6 +18,7 @@ import {
 import { parseEkspertizInput } from "@/lib/ekspertizInput";
 import { analyzeFraudRisk } from "@/lib/fraudDetection";
 import { safeRun } from "@/lib/safeRun";
+import { analyzeMarket, type Condition as MarketCondition, type RawListing } from "@/lib/marketEngine";
 import type {
   AlternativeListing,
   AlternativesStatus,
@@ -1400,6 +1401,32 @@ export async function POST(req: Request) {
       recommendation += ` Yapay zeka tahmini aralık (doğrulanmadı): ${fmtMoney(marketPrice.min)} - ${fmtMoney(marketPrice.max)}.`;
     }
 
+    // ---- Piyasa motoru: ek analiz. Hata verirse rapor yine döner (market: null). ----
+    const COND_TO_ENGINE: Record<string, MarketCondition> = {
+      like_new: "cok_iyi",
+      good: "iyi",
+      fair: "orta",
+      poor: "hasarli",
+    };
+    const marketRun = safeRun("piyasa-motoru", () => {
+      const rawListings: RawListing[] = comps.map((c) => ({
+        source: c.source.toLowerCase().replace(/^www\./, "").replace(/\.(com\.tr|com|net|org)$/, ""),
+        url: c.url,
+        title: c.title,
+        price: c.price,
+        postedAt: c.date,
+        condition: COND_TO_ENGINE[c.condition ?? ""],
+      }));
+      const storageGb = storage ? parseInt(storage, 10) * (storage.endsWith("TB") ? 1024 : 1) : undefined;
+      return analyzeMarket(rawListings, {
+        brand: aiText?.brand ?? "",
+        model: input.model.replace(/(\d{2,4})\s?(gb|tb)/gi, " ").replace(/\s+/g, " ").trim(),
+        storageGb,
+        condition: COND_TO_ENGINE[condition],
+        listingPrice: input.listingPrice,
+      });
+    });
+
     const report: EkspertizReport = {
       category: "Akıllı Telefon İleri Düzey Mühendislik Analizi",
       deviceCategory: "smartphone",
@@ -1414,6 +1441,7 @@ export async function POST(req: Request) {
       recommendation,
       confidence: estimateMode ? 0 : confidence,
       priceDeviation,
+      market: marketRun.status === "ok" && marketRun.data ? marketRun.data : null,
       identity: {
         brand: aiText?.brand ?? null,
         series: aiText?.series ?? null,
