@@ -1,7 +1,7 @@
 // src/lib/valuation.ts
-// Değerleme motoru: eşleştirme, temizleme, dağılım, düzeltilmiş değer, güven puanı, karar
-// ve canlı ilan bulunamadığında devreye giren akıllı amortisman simülasyonu.
+// Değerleme motoru: eşleştirme, temizleme, IQR süzgeci, dağılım, düzeltilmiş değer, güven puanı ve karar.
 // Sayıların tamamı burada KODLA hesaplanır. Yapay zeka sadece metin üretir.
+// Yeterli gerçek ilan yoksa sahte veri ÜRETİLMEZ: marketPrice null ve estimated true döner.
 
 export interface CompListing {
   title: string;
@@ -34,10 +34,31 @@ export interface UsedComp {
   url?: string;
 }
 
+export interface IqrRemoved {
+  title: string;
+  price: number; // ilandaki fiyat
+  adjustedPrice: number; // kondisyona göre düzeltilmiş fiyat (süzgeç bunun üzerinde çalışır)
+  source: string;
+  side: "low" | "high";
+}
+
+export interface IqrDetails {
+  applied: boolean; // süzgeç gerçekten uygulandı mı
+  multiplier: number;
+  q1: number;
+  q3: number;
+  iqr: number;
+  lowerFence: number;
+  upperFence: number;
+  beforeCount: number;
+  afterCount: number;
+  removed: IqrRemoved[]; // en fazla 10 kayıt
+}
+
 export interface ValuationBasis {
   receivedCount: number;
   matchedCount: number;
-  usedCount: number;
+  usedCount: number; // hesaplamaya katılan ilan sayısı (yetersizse 0)
   invalidRemoved: number;
   excludedRemoved: number; // aksesuar, arızalı, sıfır ürün
   duplicatesRemoved: number;
@@ -46,12 +67,15 @@ export interface ValuationBasis {
   outliersRemoved: number;
   notes: string;
   sources: string[];
+  // Eşleşen gerçek ilanlar. İstatistik yetersizse hesaplamaya katılmaz ama listelenir.
   usedComps: UsedComp[];
+  iqr: IqrDetails | null; // en az 5 eşleşen ilan yoksa null
 }
 
 export interface ValuationResult {
   marketPrice: PriceRange | null;
   confidence: number;
+  estimated: boolean; // true ise gerçek ilan verisiyle hesaplanmış piyasa aralığı yok
   basis: ValuationBasis;
 }
 
@@ -65,7 +89,8 @@ export interface JudgmentResult {
   suggestedOffer: number;
   walkAwayPrice: number;
   suspiciouslyLow: boolean;
-  estimated: boolean; // true ise piyasa verisi simüle edilmiştir
+  estimated: boolean;
+  deviationPct: number | null; // (ilan - medyan) / medyan * 100, bir ondalık; medyan yoksa null
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +98,8 @@ export interface JudgmentResult {
 // ---------------------------------------------------------------------------
 
 const MIN_COMPS = 3;
+const IQR_MIN_COMPS = 5;
+const IQR_MULTIPLIER = 1.5;
 const MAX_AGE_DAYS = 45;
 const MIN_PRICE = 1000;
 const MAX_PRICE = 1_000_000;
@@ -156,6 +183,11 @@ function ageDays(date: string | undefined, now: number): number | null {
   return (now - t) / 86_400_000;
 }
 
+function deviationPct(price: number, median: number): number | null {
+  if (!Number.isFinite(price) || !Number.isFinite(median) || median <= 0) return null;
+  return Math.round(((price - median) / median) * 1000) / 10;
+}
+
 function buildModelMatcher(model: string, storage: string) {
   const cleaned = norm(model).replace(/(\d{1,4})\s?(gb|tb)/g, " ");
   const tokens = tokenize(cleaned).filter((t) => !STOP_WORDS.has(t));
@@ -215,10 +247,6 @@ function buildModelMatcher(model: string, storage: string) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Ana Değerleme Motoru (Canlı İlan Bulunamazsa Akıllı Simülasyon Devreye Girer)
-// ---------------------------------------------------------------------------
-
 function emptyBasis(receivedCount: number): ValuationBasis {
   return {
     receivedCount,
@@ -233,13 +261,17 @@ function emptyBasis(receivedCount: number): ValuationBasis {
     notes: "",
     sources: [],
     usedComps: [],
+    iqr: null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Ana Değerleme Motoru
+// ---------------------------------------------------------------------------
 
 export function valuate(
   target: DeviceInfo,
   comps: CompListing[],
-  listingPrice: number = 25000,
   now: number = Date.now()
 ): ValuationResult {
   const input = Array.isArray(comps) ? comps : [];
@@ -296,43 +328,64 @@ export function valuate(
 
   basis.matchedCount = kept.length;
 
-  // EĞER CANLI İLAN YETERLİ DEĞİLSE: Akıllı Simülasyon Matrisi Devreye Girer (Asla 0 ilan kalmaz)
+  // Yeterli gerçek ilan yoksa sahte veri üretilmez: piyasa aralığı hesaplanamaz.
   if (kept.length < MIN_COMPS) {
-    const base = listingPrice > 0 ? listingPrice : 25000;
-    const simulatedComps: CompListing[] = [
-      { title: `${target.model} Temiz İkinci El (Sahibinden)`, price: Math.round(base * 0.98), source: "Sahibinden", condition: "good" },
-      { title: `${target.model} Kutulu Faturalı (Dolap)`, price: Math.round(base * 1.03), source: "Dolap", condition: "like_new" },
-      { title: `${target.model} İkinci El Seçenek (Letgo)`, price: Math.round(base * 0.94), source: "Letgo", condition: "good" },
-      { title: `${target.model} Ekonomik İlan`, price: Math.round(base * 0.88), source: "Sahibinden", condition: "fair" },
-    ];
-
-    basis.notes = "Canlı pazar havuzunda eşleşen yeterli ilan bulunamadığı için silikon amortisman ve piyasa simülasyon matrisi devreye sokuldu.";
-    basis.usedCount = simulatedComps.length;
-    basis.sources = ["Sahibinden", "Dolap", "Letgo"];
-    basis.usedComps = simulatedComps.map(sc => ({ title: sc.title, price: sc.price, source: sc.source }));
-
-    const simPrices = simulatedComps.map(s => s.price).sort((a, b) => a - b);
-    const median = simPrices[Math.floor(simPrices.length / 2)];
-    const min = simPrices[0];
-    const max = simPrices[simPrices.length - 1];
-
-    return {
-      marketPrice: { min, max, median, currency: "TL" },
-      confidence: 45,
-      basis,
-    };
+    basis.usedCount = 0;
+    basis.sources = Array.from(new Set(kept.map((k) => k.c.source).filter(Boolean)));
+    basis.usedComps = kept.slice(0, 12).map((k) => ({
+      title: k.c.title,
+      price: k.c.price,
+      source: k.c.source,
+      url: k.c.url,
+    }));
+    if (basis.receivedCount === 0) {
+      basis.notes = "Canlı pazar taramasından hiç ilan alınamadı. Piyasa aralığı hesaplanamadı.";
+    } else if (kept.length === 0) {
+      basis.notes = `Gelen ${basis.receivedCount} ilandan hiçbiri model, depolama ve güvenlik süzgecini geçemedi. Piyasa aralığı hesaplanamadı.`;
+    } else {
+      basis.notes = `${kept.length} eşleşen ilan bulundu; istatistiksel aralık için en az ${MIN_COMPS} gerekir. Piyasa aralığı hesaplanamadı.`;
+    }
+    return { marketPrice: null, confidence: 0, estimated: true, basis };
   }
 
   // Aykırı Değer Temizliği (IQR)
-  if (kept.length >= 5) {
+  if (kept.length >= IQR_MIN_COMPS) {
     const sortedAll = kept.map((k) => k.adj).sort((a, b) => a - b);
     const q1 = quantile(sortedAll, 0.25);
     const q3 = quantile(sortedAll, 0.75);
     const iqr = q3 - q1;
-    const lo = q1 - 1.5 * iqr;
-    const hi = q3 + 1.5 * iqr;
+    const lo = q1 - IQR_MULTIPLIER * iqr;
+    const hi = q3 + IQR_MULTIPLIER * iqr;
     const inliers = kept.filter((k) => k.adj >= lo && k.adj <= hi);
-    if (inliers.length >= MIN_COMPS) {
+    const applied = inliers.length >= MIN_COMPS;
+
+    const removed: IqrRemoved[] = applied
+      ? kept
+          .filter((k) => k.adj < lo || k.adj > hi)
+          .slice(0, 10)
+          .map((k) => ({
+            title: k.c.title,
+            price: k.c.price,
+            adjustedPrice: Math.round(k.adj),
+            source: k.c.source,
+            side: k.adj < lo ? ("low" as const) : ("high" as const),
+          }))
+      : [];
+
+    basis.iqr = {
+      applied,
+      multiplier: IQR_MULTIPLIER,
+      q1: Math.round(q1),
+      q3: Math.round(q3),
+      iqr: Math.round(iqr),
+      lowerFence: Math.round(lo),
+      upperFence: Math.round(hi),
+      beforeCount: kept.length,
+      afterCount: applied ? inliers.length : kept.length,
+      removed,
+    };
+
+    if (applied) {
       basis.outliersRemoved = kept.length - inliers.length;
       kept = inliers;
     }
@@ -369,11 +422,15 @@ export function valuate(
     source: k.c.source,
     url: k.c.url,
   }));
-  basis.notes = `${used} adet doğrulanmış canlı ilan başarıyla analiz edildi.`;
+  basis.notes =
+    basis.outliersRemoved > 0
+      ? `${used} doğrulanmış ilan analiz edildi. IQR süzgeci ${basis.outliersRemoved} aykırı ilanı eledi.`
+      : `${used} doğrulanmış ilan analiz edildi.`;
 
   return {
     marketPrice: { min: finalMin, max: finalMax, median: finalMedian, currency: "TL" },
     confidence,
+    estimated: false,
     basis,
   };
 }
@@ -389,15 +446,17 @@ export function judge(price: number, valuation: ValuationResult): JudgmentResult
     return {
       verdict: "unknown",
       decision: "unknown",
-      message: "Yeterli veri bulunamadı.",
+      message: "Yeterli canlı ilan bulunamadı; fiyat kararı verilemiyor.",
       suggestedOffer: round100(price * 0.92),
       walkAwayPrice: price,
       suspiciouslyLow: false,
       estimated: true,
+      deviationPct: null,
     };
   }
 
   const { min, max, median } = mp;
+  const dev = deviationPct(price, median);
   const suggestedOffer = round100(Math.min(median * 0.96, price * 0.97));
   const walkAwayPrice = Math.max(max, suggestedOffer);
   const suspiciouslyLow = price < min * 0.75;
@@ -412,7 +471,8 @@ export function judge(price: number, valuation: ValuationResult): JudgmentResult
       suggestedOffer,
       walkAwayPrice,
       suspiciouslyLow,
-      estimated: valuation.confidence <= 45,
+      estimated: valuation.estimated,
+      deviationPct: dev,
     };
   }
 
@@ -427,7 +487,8 @@ export function judge(price: number, valuation: ValuationResult): JudgmentResult
       suggestedOffer,
       walkAwayPrice,
       suspiciouslyLow: false,
-      estimated: valuation.confidence <= 45,
+      estimated: valuation.estimated,
+      deviationPct: dev,
     };
   }
 
@@ -441,6 +502,7 @@ export function judge(price: number, valuation: ValuationResult): JudgmentResult
     suggestedOffer,
     walkAwayPrice,
     suspiciouslyLow: false,
-    estimated: valuation.confidence <= 45,
+    estimated: valuation.estimated,
+    deviationPct: dev,
   };
 }
