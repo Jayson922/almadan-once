@@ -33,6 +33,16 @@ export type AlternativesStatus = "found" | "none_found" | "insufficient_data";
 /** live: gerçek ilanlarla hesaplandı. estimated: yeterli gerçek ilan yok. */
 export type DataMode = "live" | "estimated";
 
+/**
+ * Canlı arama adımının sonucu:
+ * ok: ilan bulundu, no_listings: arama çalıştı ama ilan çıkmadı,
+ * quota: yapay zeka kotası doldu, timeout: zaman aşımı, error: başka hata.
+ */
+export type SearchStatus = "ok" | "no_listings" | "quota" | "timeout" | "error";
+
+/** İlan satırlarının nasıl ayrıştırıldığı: code (kural tabanlı), ai (yedek çıkarma), none (ilan yok). */
+export type ParseMode = "code" | "ai" | "none";
+
 export interface TechItem {
   area: string;
   finding: string;
@@ -53,6 +63,10 @@ export interface EkspertizIdentity {
   conditionLabel: string;
   hasBox: boolean;
   hasWarranty: boolean;
+  /** Kullanıcı beyanı; girilmediyse null */
+  batteryHealthPct: number | null;
+  /** Kullanıcı beyanı; girilmediyse null */
+  usageMonths: number | null;
 }
 
 export interface BargainingPlan {
@@ -94,7 +108,7 @@ export interface RepairabilityDetail {
   summary: string;
 }
 
-/** Taranan havuzdaki ham ilan sayısı (süzgeçten önce), kaynak adına göre. Yalnızca gerçekten gelen kaynaklar listelenir. */
+/** Taranan havuzdaki ilan sayısı (süzgeçten önce), kaynak adına göre. Yalnızca gerçekten gelen kaynaklar listelenir. */
 export interface PlatformStat {
   name: string;
   receivedCount: number;
@@ -102,7 +116,7 @@ export interface PlatformStat {
 
 /**
  * Şeffaf veri dayanağı. ValuationBasis'in tüm alanlarını (elenen kalemler, IQR ayrıntıları,
- * eşleşen ilanlar) içerir; rota kaynak ve önbellek bilgisini ekler.
+ * eşleşen ilanlar) içerir; rota arama durumu, kaynak ve önbellek bilgisini ekler.
  */
 export interface DataBasis extends ValuationBasis {
   mode: DataMode;
@@ -110,6 +124,12 @@ export interface DataBasis extends ValuationBasis {
   groundedSourceCount: number;
   fromCache: boolean;
   platforms: PlatformStat[];
+  searchStatus: SearchStatus;
+  /** Arama başarısız olduysa nedeni; aksi halde boş */
+  searchNote: string;
+  parsedBy: ParseMode;
+  /** Yapay zeka çıkarma yolunda, fiyatı arama metninde bulunamadığı için atılan ilan sayısı */
+  rejectedUnverified: number;
 }
 
 /** Gerçek, bağlantılı bir ilan. Bağlantısı olmayan kayıt alternatif olarak gösterilmez. */
