@@ -1,125 +1,70 @@
 "use client";
 
-import { useState } from "react";
-import { getChecklistForModel, type CheckItem } from "@/lib/checklists";
+import React, { useState } from "react";
+import { getChecklistForModel, CheckItem } from "@/lib/checklists";
 
-interface Props {
+interface ChecklistCardProps {
   phoneName?: string;
   listPrice?: number;
 }
 
-export default function ChecklistCard({ phoneName = "Apple iPhone", listPrice = 0 }: Props) {
-  const items = getChecklistForModel(phoneName);
-  const [failedItems, setFailedItems] = useState<Record<string, boolean>>({});
-  const [copied, setCopied] = useState(false);
+export default function ChecklistCard({ phoneName = "Telefon", listPrice }: ChecklistCardProps) {
+  const items: CheckItem[] = getChecklistForModel(phoneName);
+  const [checkedItems, setCheckedItems] = useState<Record<string, boolean>>({});
 
-  const toggleItem = (id: string) => {
-    setFailedItems((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
-
-  // Kusurlara göre tahmini değer kaybı hesaplama
-  const totalImpactPercent = items.reduce((acc, item) => {
-    return failedItems[item.id] ? acc + item.impactPercent : acc;
-  }, 0);
-
-  const estimatedDeduction = Math.round((listPrice * totalImpactPercent) / 100);
-  const suggestedOffer = Math.max(0, listPrice - estimatedDeduction);
-
-  const generateBargainMessage = () => {
-    const flaws = items
-      .filter((item) => failedItems[item.id])
-      .map((item) => item.title)
-      .join(", ");
-
-    if (!flaws) {
-      return `Merhaba, ${phoneName} ilanınızla ilgileniyorum. Fiyatta son bir pazarlık payınız var mıdır?`;
-    }
-
-    return `Merhaba, ${phoneName} cihazınızla ilgileniyorum. Belirttiğiniz/tespit ettiğim (${flaws}) durumlarını göz önüne alarak teklifim ${suggestedOffer.toLocaleString("tr-TR")} TL'dir. Uygunsa bugün gelip alabilirim.`;
-  };
-
-  const copyToClipboard = () => {
-    navigator.clipboard.writeText(generateBargainMessage());
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const toggleCheck = (id: string) => {
+    setCheckedItems((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
   return (
-    <div className="mt-8 space-y-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-      <div className="border-b border-slate-100 pb-4">
-        <h3 className="text-lg font-bold text-slate-900">
-          🔍 {phoneName} İçin Özel Kontrol Listesi
-        </h3>
-        <p className="text-xs text-slate-500 mt-1">
-          Cihazı incelerken sorunlu gördüğünüz maddeleri işaretleyin. Sistem otomatik ideal pazarlık teklifini hesaplayacaktır.
-        </p>
+    <div className="p-5 border rounded-2xl bg-card text-card-foreground shadow-sm space-y-4">
+      <div className="flex items-center justify-between border-b pb-3">
+        <div>
+          <h3 className="font-bold text-lg">{phoneName} Alım Kontrol Listesi</h3>
+          <p className="text-xs text-muted-foreground">İkinci el alım yapmadan önce mutlaka kontrol edin.</p>
+        </div>
+        {listPrice && (
+          <span className="text-xs px-3 py-1.5 rounded-full bg-primary/10 text-primary font-semibold">
+            İlan: ₺{listPrice.toLocaleString("tr-TR")}
+          </span>
+        )}
       </div>
 
-      <div className="space-y-3">
-        {items.map((item) => {
-          const isFailed = !!failedItems[item.id];
-          return (
-            <div
-              key={item.id}
-              onClick={() => toggleItem(item.id)}
-              className={`cursor-pointer rounded-xl border p-4 transition-all ${
-                isFailed
-                  ? "border-red-300 bg-red-50/50"
-                  : "border-slate-100 hover:border-slate-200 bg-slate-50/30"
-              }`}
-            >
-              <div className="flex items-start justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-sm text-slate-800">
-                      {item.title}
-                    </span>
-                    {item.critical && (
-                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
-                        KRİTİK
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-slate-500 mt-1">{item.description}</p>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={isFailed}
-                  onChange={() => {}}
-                  className="h-5 w-5 rounded border-slate-300 text-red-600 focus:ring-red-500"
-                />
-              </div>
+      <div className="space-y-2.5">
+        {items.map((item) => (
+          <label
+            key={item.id}
+            htmlFor={item.id}
+            className={`flex items-start gap-3 p-2.5 rounded-lg border transition-colors cursor-pointer ${
+              checkedItems[item.id] ? "bg-muted/50 opacity-60 line-through" : "hover:bg-accent/50"
+            }`}
+          >
+            <input
+              type="checkbox"
+              id={item.id}
+              checked={!!checkedItems[item.id]}
+              onChange={() => toggleCheck(item.id)}
+              className="mt-1 h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+            />
+            <div className="flex-1 text-sm">
+              <span className={item.critical ? "font-semibold text-destructive" : ""}>
+                {item.critical && <span className="mr-1 text-xs px-1.5 py-0.5 rounded bg-destructive/10 text-destructive">KRİTİK</span>}
+                {item.label}
+              </span>
             </div>
-          );
-        })}
+          </label>
+        ))}
       </div>
 
-      {totalImpactPercent > 0 && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-4 space-y-3">
-          <div className="flex justify-between items-center text-sm">
-            <span className="text-amber-900 font-medium">Tespit Edilen Kusur Değer Kaybı:</span>
-            <span className="font-bold text-amber-900">-%{totalImpactPercent} (~{estimatedDeduction.toLocaleString("tr-TR")} TL)</span>
-          </div>
-          <div className="flex justify-between items-center text-base pt-2 border-t border-amber-200/60">
-            <span className="font-bold text-slate-900">Önerilen İdeal Teklif:</span>
-            <span className="font-extrabold text-emerald-600 text-lg">{suggestedOffer.toLocaleString("tr-TR")} TL</span>
-          </div>
-        </div>
-      )}
-
-      <div className="border-t border-slate-100 pt-4">
-        <label className="text-xs font-semibold text-slate-700 block mb-2">
-          🤖 Otomatik Hazır Pazarlık Mesajı
-        </label>
-        <div className="rounded-xl bg-slate-100 p-3 text-xs text-slate-700 font-mono">
-          {generateBargainMessage()}
-        </div>
-        <button
-          onClick={copyToClipboard}
-          className="mt-3 w-full rounded-xl bg-slate-900 py-2.5 text-xs font-bold text-white transition-all hover:bg-slate-800"
+      <div className="pt-2">
+        <a
+          href="https://www.turkiye.gov.tr/imei-sorgulama"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center justify-center w-full text-xs text-center py-2 px-3 rounded-lg bg-blue-50 text-blue-600 font-medium hover:bg-blue-100 transition-colors"
         >
-          {copied ? "✓ Kopyalandı!" : "Satıcıya Göndermek İçin Mesajı Kopyala"}
-        </button>
+          🔍 e-Devlet IMEI Sorgulama Sayfasına Git ↗
+        </a>
       </div>
     </div>
   );
